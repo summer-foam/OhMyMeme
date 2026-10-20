@@ -1,0 +1,41 @@
+name: Check
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+    branches: ["**"]
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install dependencies
+        run: |
+          pip install -r requirements.txt
+          pip install ruff black pytest
+      - name: Lint
+        run: |
+          ruff check src/
+          black --check src/
+      - name: Test
+        run: python -m pytest tests/ -v
+
+  # C++ helper 的密码学原语与密钥提取路径测试。单独 job 且仅 Windows：
+  # wechat_keyfinder 是 Windows-only（CMakeLists 对非 WIN32 直接 FATAL_ERROR），
+  # 放进上面的 ubuntu job 会必然失败。随 check 一起跑，让 PR 阶段即可拿到反馈
+  # （打包 job 已改为手动触发，见 build.yml / release.yml）。
+  keyfinder-tests:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Configure
+        run: cmake -S src/wechat_keyfinder -B build/keyfinder-tests -A x64 -DWKF_BUILD_TESTS=ON
+      - name: Build
+        run: cmake --build build/keyfinder-tests --config Release
+      - name: Run tests
+        run: ctest --test-dir build/keyfinder-tests -C Release --output-on-failure

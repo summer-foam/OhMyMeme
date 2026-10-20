@@ -1,0 +1,472 @@
+# v0.7.0（未发布）
+
+## 新增功能
+- **插件系统** — 新增 `src/plugin_manager.py`：扫描插件目录（`<数据目录>/plugins/` + 配置 `plugin_dirs` 开发直连）加载第三方插件（`plugin.json` manifest，`api_version` 必须为 1）；单个插件 manifest 非法/依赖缺失/entry 异常/on_load 超时仅禁用该插件，宿主与其余插件不受影响；权限声明制（`route`/`main_api`/`settings_api`/`assets:serve`/`settings:section`/`buttons`/`startup`/`window`/`host:evaluate_js`），未声明的注册调用在 `on_load` 内抛 `PermissionError` 使该插件加载失败；回调超时熔断（on_load 15s / 普通回调 10s / JS API 120s）与回调异常自动停用（下次重启恢复）
+- **设置页「插件」分组** — 左栏新增「插件」导航：插件列表为折叠栏（标题=插件名，点击展开版本/作者/仓库/权限/状态/失败原因与该插件的设置区块，右侧开关启停，停用立即生效、启用提示重启），宿主插件区块与各插件自管设置区块统一显示并自动移入对应插件折叠栏内；插件设置表单经 `data-plugin`/`data-key` 约定自动回填与收集（`pluginSaveSection`），独立存储于按插件 id 分文件的 `%APPDATA%/OhMyMeme/plugins/<id>/settings.json`（配置目录，随用户配置；合并写入，不进宿主设置；旧版 `plugins_state.json` 内嵌设置与旧位置数据目录下的设置文件首次启动自动迁移），保存后触发插件 `on_settings_changed` 并向主窗口推送 `omm-plugin-refresh` 刷新插件样式与脚本；「打开插件目录」一键直达
+- **插件资产注入** — 插件按 `windows`（main/settings）注册 CSS/JS：设置页/主窗口服务端注入（`</head>` 前插 link、`</body>` 前插 defer script，设置页另有 `<!-- plugin-sections -->` 区块锚点），插件脚本在宿主脚本之后按 id 序执行；`/plugins/<id>/<path>` 静态服务（路径穿越/禁用即 404），资产 URL 带 `版本-设置哈希` 参数、设置变化自动改 URL 防缓存
+- **插件设置页区块与前后端 API** — 插件可向设置页「插件」分组注入 HTML 区块；`pywebview.api.plugin_call(id, method, args)` 在主窗口（JsApi）与设置窗口（SettingsApi）分别分发到插件注册的方法；插件自定义 HTTP 路由（GET/POST，参数 dict，返回 str/dict 自动 JSON，Content-Type 按扩展名推断）
+- **顶栏插件按钮与布局约束** — 标题栏渲染插件按钮（`{key,label,icon,order}`，icon 为空渲染文字按钮），点击经 `JsApi.plugin_button_click` 分发到插件 handler；插件可隐藏核心按钮（`sort/select/upload/download/import/refresh/settings/close`）或覆盖其 order（默认 10/20/30/40/50/60/70/1000），经 `get_init_data` 随首屏下发
+- **启动动画与窗口尺寸覆盖** — 插件（`startup`/`window` 权限）可覆盖启动视频源/底色与主窗口初始尺寸；`get_init_data` 新增 `startup_video_src`/`startup_bg_color`（空即用默认 `OhMyMeme.mp4`/`#000000`），`WebUI._resolve_window_size()` 按「插件覆盖 > 持久化窗口尺寸 > 默认 960×640」取值（范围校验 480-8000/360-6000），窗口关闭时尺寸随位置一并持久化（配置 `window_width`/`window_height`，0=默认）
+- **允许调整窗口大小** — 设置页「窗口」新增开关（配置 `window_resize_enabled`，默认关）：开启后主窗口与设置窗口均可拖 8 向边框调整大小（绝对增量 + rAF 节流），尺寸经 `JsApi.resize_window`（钳 480-8000/360-6000）/`SettingsApi.resize_window`（钳 600-8000/480-6000，persist 写配置）持久化，设置窗关闭/重建时也保存尺寸（配置 `settings_window_width`/`settings_window_height`，0=默认 720×560），重启后保留
+- **插件启动动画支持图片/动图与文件选择** — 插件可经 `set_startup_override(..., duration_ms, media_type)` 覆盖为图片/动图（`media_type="image"` 时前端用 `<img>` 按实际时长只播一遍，GIF 时长由插件侧 PIL 逐帧解析，上限 15s；视频仍 `@ended` 收起）；`SettingsApi.plugin_pick_file(plugin_id, media)` 提供原生文件对话框（video/image/any 过滤），选中文件由插件复制进 `plugins_data/<id>/` 并经 `/plugins/<id>/data/<path>`（`resolve_asset` 新增 `data/` 前缀解析到插件数据目录，含穿越防护）对外提供
+- **设置页插件区块回填完成事件** — `initPlugins` 回填循环完成后派发 `omm-plugin-section-filled`（`detail.plugin_id`），插件脚本据以同步下拉/颜色控件等非 `data-key` 管理的控件；同时修复桥接未就绪时插件列表渲染「暂无插件」导致折叠栏不生成、设置不回填的问题——`initPlugins` 增加 `initPluginRetries`（20×200ms）与 `initPlugins` 同样的重试
+- **官方插件模板与个性化插件** — 新增配套仓库 `omm-plugin-template`（manifest 字段/权限/on_load API/生命周期/设置区块约定/路由与 API/依赖 vendor/调试的完整开发指南）与 `omm-personalized-plugin`（启动动画、背景、字体、顶栏按钮布局的个性化定制，背景与字体保存即生效；v1.1.0 起启动动画改「选择文件」并自动复制进插件数据目录，字体改常用中文字体下拉、颜色改 RGBA 滑杆 + HEX 输入 + 色块实时预览的联动控件，设置控件由插件 `assets/settings.js`+`settings.css` 注入）
+- **插件系统测试** — 新增 `tests/test_plugin_manager.py` 33 例：manifest 校验与跳过（id 非法/缺 name/version/api_version 不匹配/repo 非法/损坏 JSON）、sandbox 跳过、依赖缺失拒绝、entry 异常隔离、权限门控、回调异常与超时熔断、启停与用户禁用重启语义、设置合并与按 id 分文件持久化 roundtrip、旧 `plugins_state.json` 设置自动迁移、`on_settings_changed` 触发、资产解析与路径穿越拒绝（含 `data/` 前缀到插件数据目录）、注入顺序与禁用失效、资产版本随设置变化、自定义路由分发与 Content-Type、启动动画/窗口尺寸按 id 序覆盖、启动媒体时长/类型字段透传、按钮注册与约束、vendor sys.path 追加移除、注入辅助函数、设置页标记齐全（含窗口开关区块与插件重试/回填事件）、`_resolve_window_size` 分支、JsApi/SettingsApi 插件分发、配置窗口尺寸默认值与旧配置迁移保留；`test_startup` 补主窗口 960×640 尺寸断言、「允许调整窗口大小」开关契约与 `resize_window` 尺寸钳制 2 例；全量 `tests/` 489 passed（`test_lan` 环境性失败除外）
+- **导入超限弹窗与关闭限制开关** — 单张交互式导入（拖放本地路径/原图下载、文件上传、剪贴板）超过 2560px 或 20MB 时弹窗选择「保留」或「取消导入」（超限文件先复制到独立临时文件，超时 5 分钟自动丢弃）；设置页「基础设置 → 导入限制」新增「关闭表情包大小限制」（配置 `import_no_limit`，默认关），关闭后本地导入、云端拉取与局域网接收均不再拦截超限文件
+- **重复表情提示统一** — 导入与库中完全相同的表情（同 SHA-256）时，主窗口底部小字提示统一为「已存在相同表情包」
+- **Windows MSI / MSIX 安装包** — 构建脚本新增 `--msi`（WiX Toolset v5 模板 `scripts/installer/wix/app.wxs`，产出 `dist/OhMyMeme-<版本>.msi`，适合离线/组策略批量部署）与 `--msix`（Windows SDK `makeappx` + 模板 `scripts/installer/msix/AppxManifest.xml`，产出 `dist/OhMyMeme-<版本>.msix`，用于 Microsoft Store 上架或侧载）；二者在 `.exe` 安装包之外追加构建，缺少工具/清单时仅告警跳过；MSIX 身份信息（Name/Publisher/PublisherDisplayName）从 Partner Center 填入模板或经环境变量 `OHMYMEME_MSIX_IDENTITY_NAME`/`OHMYMEME_MSIX_PUBLISHER`/`OHMYMEME_MSIX_PUBLISHER_DISPLAY_NAME` 覆盖，产物不签名（Store 上架时重签）
+
+## 变更
+- **上传改为按云端清单差集，仅上传缺失文件** — 「上传到远端」现在先拉取云端清单，按「文件名缺失或 SHA-256 不同」筛出云端缺失/变更的表情，只上传这些文件（进度与总数只反映待上传项）；不再对每个文件逐次发起存在性请求，大库同步明显更快（云端清单为唯一判据，不再逐文件复核物理存在）
+- **设置页导航新增「插件」分组** — 位于「危险操作」之后；`settings.js` 脏检查跳过插件自管输入（`data-plugin`），插件设置保存不再触发宿主「有未保存的更改」提示
+- **主窗口标题栏按钮改为数据驱动** — 核心按钮按固定 order 渲染（`v-if` 隐藏 + CSS order 定位），为插件按钮与布局约束让出插槽；启动动画视频源/底色改由 `get_init_data` 下发（插件可覆盖），行为不变
+- **个性化插件移除窗口尺寸设置** — `win_width`/`win_height` 不再由插件覆盖（`window` 权限撤销），窗口大小统一走宿主「允许调整窗口大小」开关 + 拖边框调整并持久化；插件升级 v1.1.0
+
+# v0.6.5
+
+## 新增功能
+- **关闭自动隐藏开关** — 设置页「基础设置 → 全局快捷键」新增「关闭自动隐藏」（配置 `disable_auto_hide`，默认关）：开启后热键会话内复制或拖拽成功不再自动隐藏主窗口（`schedule_hide()` 入口门控），普通/托盘显示、手动隐藏等其余行为不变
+- **悬停放大预览开关** — 设置页「基础设置」新增「悬停预览」区块（配置 `hover_zoom`，默认开）：关闭后鼠标悬停卡片不再浮出整图预览；`get_init_data` 下发首屏状态，设置保存经 `refreshMemes` 同步到主窗口
+- **悬停放大预览** — 主界面表情悬停 0.5 秒自动浮出完整原图（长图/宽图在格内被 `object-fit:cover` 裁切，悬停突出显示全图），按卡片位置居中并夹紧在视口内（预览盒上限 `min(72vw,900)×72vh`），云卡片同样适用；排序/多选模式不触发，移动鼠标、网格滚动、右键、指针按下、Esc、翻页刷新自动收起，GIF 悬停播放（150ms 换原图）不受影响
+- **首次运行环境检测** — Windows 首次启动弹出原生检测窗口（tkinter，不经网页控件），检测 WebView2 Runtime 安装与版本（门槛 ≥ 94.0.992.0：pywebview 6 初始化无条件设置的 `IsSwipeNavigationEnabled` 自 SDK 1.0.992.28 起要求该版本，取其与 pywebview 源码解析阈值 86.0.622.0 的较大者；更旧版本会白屏）及 .NET Framework ≥ 4.6.2；检测 UI 为独立子进程（`--env-check-ui` 内部旗标在单实例检查前运行），「确定」写 `env_check.json` 标记后不再自动显示（×/ESC 不写，下次再提示），设置页「关于 → 打开环境检测」可随时重开（非阻塞），`--debug-env` 强制打开并输出检测详情；检测失败仅提示后续支持 winget 自动安装/升级（当前仅检测）
+- **侧边栏滑动手势** — 折叠时在左侧栏条（48px）上按住右滑展开、展开时在侧栏内左滑折叠（水平位移 ≥40px 且水平主导触发），与搜索框左侧折叠按钮等效；滑动结束的误触点击在 document 捕获阶段吞掉，`#sidebar` 加 `touch-action: pan-y` 支持触摸滑动
+- **局域网传输进度浮层** — 手机与电脑互传表情包/配置时，设置页显示进度浮层（复刻云同步进度条样式：字节制百分比 + 实时速度、当前文件、「后台运行」按钮）；手机端在 `pull_file`/`push_file`/`get_config`/`send_config` 帧附带 `meta` 总量（`files_total`/`bytes_total`，纯增量协议，旧版手机/电脑自动忽略），电脑端累计本端实际收发量；无总量的旧手机降级显示「已传输 N 文件」，传输完成或空闲 5 秒自动隐藏，自适应轮询（传输中 300ms / 空闲 5s）
+- **局域网传输测试** — `tests/test_lan.py` 新增 7 例：pull/push meta 总量累计与方向、达量即标记完成、无 meta 降级、配置命令计数、空闲超时重置、`get_status` 暴露 `transfer`/`pending_confirm`
+- **标签写入同步清单** — `meme-index.json` 每个表情条目新增 `tags` 数组（无标签为 `[]`），设置页「云端同步」新增「将标签写入同步清单」开关（配置 `manifest_include_tags`，默认开）；`pull` 与局域网 `push_manifest` 按**并集**合并远端标签（只增不清，兼容读取旧版顶层 `tag_map`），标签编辑后本地清单即时重建；manifest `version` 保持 3（纯增字段，旧端读到未知键自动忽略）
+- **收藏夹写入同步清单** — `meme-index.json` 顶层新增 `favorite` 文件名数组（无收藏为 `[]`），设置页「云端同步」新增「将收藏夹写入同步清单」开关（配置 `manifest_include_favorites`，默认开）；`pull` 与局域网 `push_manifest` 按**并集**合并远端收藏（只增不清，按 filename 关联，经 `_safe_remote_fname` 过滤），该合并不受开关限制；manifest `version` 保持 3（纯增字段，旧端读到未知键自动忽略）
+- **关于页 GitHub / QQ 群入口** — 设置页「关于」新增「GitHub 项目地址」「加入 QQ 群」按钮，经后端 `SettingsApi.open_url`（仅允许 http/https）交系统默认浏览器打开
+- **Windows 安装包内置裁剪版 ffmpeg** — Telegram 导入的 WebM 转 WebP 不再要求用户自行安装 ffmpeg：CI 从源码交叉编译仅含 VP9 解码与 WebP 动画编码的静态单文件（20MB 体积预算，无运行时下载），运行时优先使用内置版、回退 PATH 中的系统 ffmpeg；Linux/macOS 仍使用系统 ffmpeg
+- **启动时自动补传云端缩略图** — 设置页「云端同步」新增开关（配置 `cloud_thumb_auto_push`，默认开）：「云端直接使用」开启时，启动后静默检测云端 `thumbnails/` 缺失项，先补齐本地缺失/过期缩略图再差集后台上传（不弹进度、不打扰使用），失败仅记录日志；关闭后仅在手动同步时随 push 上传
+- **设置向导** — 首次启动（或旧版本升级后）弹出 7 步设置向导：全局快捷键、开机自启、动图自动播放、云端同步（可跳过）、导入表情（可跳过）；关闭（含 ESC/×/完成）即写入 `config.json` 的 `guide` 标记（本机配置，不进同步清单），下次启动不再提示；设置页「基础设置」新增「打开设置向导」按钮可随时重跑
+- **点击 logo 返回主页** — 点击主窗口标题栏「OhMyMeme」logo 清空搜索/标签/分组筛选回到全部视图，不打断拖拽移动窗口
+- **复制时避免 WebP** — 设置页「复制处理」开关（默认关闭）：微信等应用会把复制的 WebP 当成文件，开启后复制路径上的产物一律不含 WebP —— 动图 WebP 转动画 GIF、静态 WebP 转 JPG（带透明合成白底）、非 WebP 的缩放产物输出 JPG/PNG，其中「WebP 缩放」模式直接按目标格式编码避免二次有损；动图转 GIF 按尺寸上限等比缩小以控制体积（GIF 无帧间压缩，长动图可远超原图，实测全库 56 个动图由 84MB 降至 22MB、最大单个由 6.4MB 降至 1.6MB），静态转 JPG 保持原分辨率；库内文件/数据库/缩略图/同步均不变，仅生成临时转换副本，转换失败回退原图并记录日志
+- **云端直接使用** — 设置页「云端同步」新增开关（配置 `cloud_direct`，默认关；首次配置云端存储类型时弹窗询问）：开启后启动时拉取云端清单，本地与本地缺失的云端表情按清单顺序穿插混入主网格（全部/分组/标签/搜索/收藏夹/未分类可见，最近使用除外；全局按清单 memes 序、分组视图按该分组子树序，尚未推送的新导入表情排最前，侧栏/标签/分页计数同步计入，卡片左下角云角标），点击云卡片即下载（流式 SHA-256 校验 + PIL 头校验 + 导入限制 + 哈希去重）入库并自动复制，标签/分组/收藏由后台异步补齐并重建清单；云卡片不参与收藏/右键/排序拖拽/多选，下载完成后自动转为本地卡片；开关或云后端变更时重置云态立即重拉；缩略图本地与远端统一为 `thumbnails/{sha256}.webp`（动图缩略图为逐帧动画 WebP，旧静态产物启动/推送前自动重建），滚动到缺失缩略图的云行时后台自动补拉并刷新（无需重启），标题栏「刷新」同时重拉云端清单与缩略图；设置保存刚开启时弹窗询问是否立即上传一次（含缩略图），确保缺失表情能正常显示
+
+## 变更
+- **云端下载完成遮罩退场动画** — 点击云卡片下载成功后，「下载中...」黑色遮罩自上而下擦除退场（`clip-path` inset 顶部先消失，约 0.45s），动画期间保持防连点，结束后刷新网格把云行转为本地卡片；下载中/失败提示不变
+- **设备连接确认弹窗迁移到设置窗口** — 手机配对确认从主窗口移至设置窗口（局域网互联所在页）：`_lan_confirm_cb` 确保设置窗口存在并前置后直接推送弹窗，`get_status()` 新增 `pending_confirm` 由设置页轮询兜底展示；主窗口不再承载确认 UI，拒绝/超时行为不变
+- **微信导入对话框增加用户协议警告** — 打开「从微信导入」即在标题下显示红字警告「该功能可能不符合微信用户协议，请谨慎使用！」
+- **更新镜像列表移除 proxy.starsfire.top** — 该代理仅浏览器可访问（程序化请求 404），版本检测与安装包下载保留 `github.dpik.top` / `gh.dpik.top` / `gh-proxy.org` 3 镜像 + 直连 GitHub 源站并发竞速
+- **动图转 GIF 保真帧延时并消除残影** — 帧延时按源文件写回（仅设 20ms 下限），不再沿用已撤下旧实现的「<50ms 统一改 100ms」钳制（实测库内动图延时中位数 42ms，旧钳制会使动画慢 2 倍多）；逐帧处置设为清空画布，避免透明区域透出上一帧形成残影
+- **Linux 剪贴板 MIME 按扩展名标注** — 原先静态非 WebP 图片一律标记为 `image/png`，改为按扩展名映射（jpg/jpeg→`image/jpeg`、bmp→`image/bmp`）
+- **缩略图统一为内容哈希命名** — 缩略图由 `{id}.png` 改为 `{sha256}.webp`（150px WebP q85，原子写入），路由改为 `/api/thumb/<sha256>`，本地与云端共用同一文件（云端直接使用的显示基础）；启动时按 `file_hash` 自动迁移旧缩略图并删除旧 png，删除表情/同步删除时按哈希清理
+- **托盘右键菜单中文化** — 菜单由英文改为中文（「显示/隐藏」「退出」）；托盘初始化或运行在当前后端不兼容（如部分 Linux 环境）抛错时自动回退英文重建一次，dev 模式标题行不变
+- **云端直接使用默认开启** — 默认由关改为开（从未显式关闭过的配置自动启用，老用户无需手动寻找开关）；首次配置云端存储类型时的确认弹窗按钮由「确定/取消」改为**「开启/关闭」**二选一（默认已勾选时仍询问一次，Esc/点遮罩不改动），「关闭」即取消勾选
+
+## 修复
+- **热键 F15 探针泄漏到前台窗口（issue #95）** — 每 30s 的钩子心跳探针此前作为真实按键到达前台应用（gvim/SSH 终端等响应该键）；改为 `SendInput` 注入带 `OHMM` `dwExtraInfo` 标记（回退 `keybd_event` 同样带标记）+ `keyboard.hook(suppress=True)` 阻塞钩子在探针确认窗口（pending，≤15s）内把探针吞掉——吞掉时在钩子内直接刷新心跳时间戳完成确认，钩子已死场景仍按原逻辑超时自愈；窗口外的真实 F15 按键与其余按键一律放行，阻塞钩子异常时回退放行
+- **内置 ffmpeg CI 构建失败** — ffmpeg-win64 交叉编译因 runner 缺 `x86_64-w64-mingw32-pkg-config`（由 mingw-w64-tools 提供，未安装）被 ffmpeg configure 静默禁用 pkg-config 库检测（warn 只写 config.log 不上屏），libwebp 检查精确报 "not found" 中止构建；`build_win64.sh` 改用原生 `--pkg-config=pkg-config`（尊重脚本导出的 PKG_CONFIG_PATH）+ configure 前预检 `libwebp.pc`，失败时输出 `ffbuild/config.log` 尾部兜底诊断；组件存在性执行检查（`-decoders/-encoders`）改为仅在能运行 PE 的环境执行（Linux runner 上交叉产物直接执行报 `Exec format error`），CI 侧由打包 windows job 的 `--verify-ffmpeg` 对产物端到端转换兜底
+- **内置 ffmpeg 裁掉 libvpx-vp9 解码器** — 根因：libvpx configure 未传交叉工具链——其 `setup_gnu_toolchain` 取 `${CROSS}gcc/ar/strip` 而源码从不设置 `CROSS`，只给 `--target=x86_64-win64-gcc` 会退化为宿主 gcc/ar，C/C++ 对象编成 ELF（仅 nasm 成员是 win64 COFF），mingw ld 按索引打开成员时格式不符被**静默跳过**，ffmpeg configure 的两条 libvpx 检查（pkg 与 check_lib）均报 undefined reference（`vpx_codec_vp9_dx`、`vpx_codec_control_`——后者是 vp8dx.h 展开的 ~20 个 static 包装函数各调一次），解码器被静默裁掉（configure 仅 warn 不上屏），导致 `--verify-ffmpeg` 失败、TG WebM 转 WebP 缺 VP9 解码（nm 能列出符号、绕过 strip/ranlib 各轮均无法修复——成员本身是 ELF，早先「strip 破坏索引」的初判为误判，cp/ranlib 保留作防线）；修复：configure 传 `CROSS=x86_64-w64-mingw32-`（CC/CXX/AR/LD/STRIP/NM 全交叉，CI 随之补装 `g++-mingw-w64-x86-64`——`[CXX] ratectrl_rtc.cc` 必需）+ `make HAVE_GNU_STRIP=no` 走 cp 分支保留未 strip 归档 + 安装后 `x86_64-w64-mingw32-ranlib` 重建归档索引 + 复刻 check_lib 的**链接自检**（失败输出链接错误、config.mk 工具行、objdump -f 成员格式统计、nm -s 索引与 ld -t trace 诊断后中止），另保留 `--disable-multithread`（使 check_lib 兜底 `-lvpx -lm` 不依赖 -lpthread）与三道防线：configure 后硬断言 `config_components.h` 含 `CONFIG_LIBVPX_VP9_DECODER 1`（失败输出 config.log 的 vpx 线索）、configure 前预检 `vpx.pc`、产物二进制组件字符串检查（任何平台 `grep`，Linux CI 也能拦截被裁组件）
+
+# v0.6.4
+
+## 新增功能
+- **本地备份与恢复** — 设置页 ZIP 导出/恢复，PC 间整库迁移，仅空库可恢复
+- **多选批量操作** — 整理模式多选 + 批量删除，搜索命中标签名，分组下拉搜索/任意视图加入分组
+- **导入体验增强** — 感知哈希相似去重重构，并发导入自动去重
+- **主窗口加大** — 主窗口加大到 960×640，网格列数随宽度自适应
+- **Telegram 并行转换** — webm→webp 并行化约 2.9× 加速，支持取消，显示 ETA 进度
+- **微信环境检测增强** — no_database 兜底与诊断 + 3.x 旧版布局明确引导
+- **微信账号目录识别优化** — 不依赖 wxid_ 前缀 + 单实例防多开 + 打包补 offsets.json
+
+## 变更
+- **分组名自然/拼音排序回退** — 分组名排序用 Python `_name_sort_key` 稳定排序，数字段按整数、中文按拼音
+- **设置窗口对主窗口居中** — 每次打开设置窗口时相对于主窗口位置居中
+- **更新检查改为非阻塞** — 后台线程 + 24h 缓存，启动不再卡顿
+
+## 修复
+- **删除标签下最后一张图后筛选卡死** — 悬空分组筛选兜底 + 空页自动回退
+- **设置页对话框覆盖问题** — 高频热键卡死 + 对话框统一修复
+- **存储位置迁移三阶段幂等** — 启动自愈，修复跨盘迁移分裂状态
+- **热键运行期失效排查与自愈补全** — 测试日志隔离 + Windows 钩子心跳探针
+- **设置窗口打开后数秒无法交互** — 多线程服务器 + contributors 缓存
+- **WebDAV 同步重复 MKCOL 触发远端锁** — 全局快捷键运行期失效自愈
+
+# v0.6.3
+## 新增功能
+- 整理模式多选与批量删除 — 整理模式下点击卡片勾选/取消、拖拽框选，底部操作栏全选/取消/批量删除，后端事务安全回滚
+- 感知哈希相似图去重 — pHash 持久化 DB，全库毫秒级比对，导入/上传触发相似弹窗（保留/跳过/都保留），并发去重防重复
+- 渠道导入自动分组 — TG/抖音/微信导入自动归入对应分组，消除重复空分组
+- 交互式导入后台化 — 文件夹/文件导入走后台线程 + 进度条，不再阻塞 UI
+- 存储位置迁移进度条 — 更换存储目录时显示进度
+- Telegram 并行转换 + ETA — webm→webp 并行化约 2.9× 加速，支持取消，显示 ETA 进度
+- 更新检查非阻塞 — 后台线程 + 24h 缓存，启动不再卡顿
+## 变更
+- 主窗口加大到 960×640，网格列数自适应
+- 窗口拖动改为绝对目标 + 节流，修复快速拖动抖动
+- 导入错误日志全面补全，消除静默失败
+- UI/UX 全面优化（分组树/右键菜单/标签编辑器/分页器/设置页等）
+## 修复
+- 微信导入 helper 二进制哈希配置（SHA-256 真实值）
+- Telegram WebM 转 WebP 循环播放（-loop 0 → -loop 1）
+- Telegram WebM 转换速度（无损→有损 q80，3-7 倍提升）
+
+# v0.6.2
+
+## 变更
+
+- **启动动画遮罩背景色改为写死** — 遮罩背景色写死为 `#000000`（OhMyMeme.mp4 边框纯黑），经 `get_init_data` 传给前端应用到启动遮罩与 html/body 背景，消除动画边缘与窗口背景色差；移除运行时 ffmpeg 抽帧采样，避免影响启动速度
+- **设置页导入改为来源列表** — 导入分组整理为 `[icon] [name]` 一行行形式（硬编码 SVG 图标 + 名称），点击对应行弹出该软件的导入对话框；QQ/QQNT 直接开始，Telegram/抖音/微信先弹配置对话框（目录/Cookie/账号等）再开始，配置字段随弹窗展示，进度在对话框内切换
+
+## 修复
+
+- **手机-电脑互联被电脑端拒绝** — Vue 重构丢失 `window.showLanDeviceConfirm`，后端 `evaluate_js` 调用失败后默认拒绝；已补回该全局弹窗函数
+- **同步/设置保存后主窗口不刷新** — 主窗口缺失 `refreshMemes/refreshTags/refreshCollections` 全局函数、SettingsApi 缺失 `refresh_memes/refresh_tags/refresh_collections` 方法，已补齐
+- **创建分组交互改进** — 右键表情「添加分组」预选该表情；下拉按「新建分组 / 加入已有分组」分节；选择已有分组保留预选并合并现有成员；分组成员加载增加竞态保护与失败重试，加载/失败期间禁止提交不完整成员集
+- **对话框样式统一** — 主窗口原生 `confirm()` 与设置页密钥警示改为自定义主题对话框（`ConfirmDialog`/`showConfirm`），移除浏览器系统弹窗残留
+
+# v0.6.1 — Vue 3 主窗口重构 / 启动动画 / 源码自动编译前端
+
+## 新增
+
+- **主窗口重构为 Vue 3 组件化架构** — `src/vue-src/`（Vite 构建 IIFE 单文件 `src/webui/dist/ohmymeme.js`）：网格/标签栏/分组树/标题栏/拖拽排序/右键菜单等组件化，`useMemes` 集中状态管理，`useDragSort`/`useContextMenu`/`useCollectionBuilder` composables，Pager/TagEditor/ImportMenu/SyncOverlay 等组件（#60）
+- **启动动画** — 主窗口启动时全屏播放 `src/resources/OhMyMeme.mp4`（视频结束或 6s 兜底后 0.4s 淡出），仅启动时播放一次，快捷键/托盘呼出不重播；Bottle 新增 `/resources/<filepath:path>` 路由提供内置资源
+- **显示启动动画开关** — 设置页「显示启动动画」开关（配置键 `show_startup_animation`，默认开）：开启时动画播放期间即并行加载后续内容（无 300ms 延时，动画天然覆盖桥接稳定时间）；关闭时不播放视频，降级为 300ms 延时后加载
+- **动画背景自动贴合视频边框** — `webui.py` 的 `startup_bg_color()` 用 ffmpeg 抽视频首帧 + PIL 采样四边众数色（缓存一次，无 ffmpeg/失败回退 `#0d0d0f`），经 `get_init_data` 传给前端应用到启动遮罩与 html/body 背景，消除动画边缘与窗口背景色差
+- **源码运行自动编译前端** — `main.py` 启动时 `_ensure_vue_frontend()` 检查构建产物，缺失（源码运行且未打包）则用 `npx vite build` 自动编译一次，失败仅告警不阻断启动
+- **侧边栏折叠按钮移到搜索框内** — `.sidebar-toggle` 位于 `#search-wrap` 左侧，搜索框 `flex:1` 随侧边栏 180px↔48px 动态伸缩
+
+## 变更
+
+- **PyInstaller 打包内置资源** — `build.py` 新增 `--add-data src/resources`，启动动画 mp4 随安装包分发
+- **构建自动编译 Vue 前端** — `build.py` 打包前检查 `src/webui/dist/ohmymeme.js`（被 gitignore，CI 全新检出缺失），缺失时自动 `npm ci` → `npx vite build`，失败中止构建；CI 打包不再缺失前端产物
+
+## 修复
+
+- **原生拖拽拖回误触发导入** — Vue 重构后 `nativeDragActive` 从未置 true，原生拖拽进行中回拖到窗口被 drop 处理器误判为导入；现于 `pointermove` 位移 >8px 触发原生拖拽前置 true、Promise `.then/.catch` 中重置，拖拽期间回拖视为取消
+- **拖拽失败 toast** — 原生拖拽返回 False（文件缺失/取消）时提示「拖拽失败：本地文件不存在」
+
+# v0.6.0 — 标签系统 / 侧边栏分组树 / 翻页浏览 / Nightly 构建
+
+## 新增
+
+- **表情标签系统** — 右键表情「打标签」弹出标签编辑器：点选已有标签、搜索过滤、输入新建（回车添加），覆盖式写入并自动清理无引用孤儿标签；标签栏横排展示，多标签交集筛选（#29 #47）
+- **侧边栏分组树** — 左侧可折叠分组树（支持嵌套分组展开/收起，选中父分组递归包含子分组），搜索栏回归顶部，网格固定 4 列，支持拖拽表情到子分组文件夹卡（#51）
+- **未分类分组** — 动态展示未加入任何分组的表情（`collection_id=-4`，不写入 DB/manifest），设置页可开关显示
+- **Telegram 缓存导入** — 从 Telegram Desktop `tdata` 解密 AES-IGE/CTR 缓存提取贴纸，webm 无损转动画 webp（libvpx 保留透明通道），动画版与静态版去重，支持本地密码与手动指定目录（#33）
+- **微信表情包导入** — 独立 C++ 二进制 `wechat_keyfinder` 内存取证提取密钥 + AES-256-CBC 解密 DB + CDN 下载入库，掩码恢复为主路径无需 RVA，WAL 合并，仅 Windows
+- **拖拽排序视觉反馈** — 排序态卡片 `scale(0.95)` + 描边 + 3px 偏移 + 独立 `rotate` 轻微晃动；正在拖拽卡用 `translate(...) scale(0.90)`；FLIP 让位动画与指针捕获（#53 #54）
+- **快捷键会话自动隐藏** — 全局快捷键呼出主窗口后，成功复制或成功原生拖拽才自动隐藏（#52）
+- **按鼠标显示器显示主窗口** — Windows 全局快捷键呼出时，按鼠标所在显示器工作区就近放置窗口（#46）
+- **分页翻页条** — 主窗口单页固定展示（`MEME_PAGE=200`），网格底部渲染翻页按钮（`<` 上一页 / 页码窗口含 `…` / `>` 下一页 / `>>` 末页），搜索/标签/分组切换自动回第 1 页
+- **点击分组名返回首页** — 点击当前所在分组名直接回到全部表情视图
+- **导入大小与分辨率上限** — 超过 `_IMPORT_MAX_PX`（2560px 最长边）/ `_IMPORT_MAX_BYTES`（20MiB）的文件拒绝接收并计数提示（#32）
+- **ADB 存储卷自动识别** — QQ 缓存目录定位回退链支持枚举 `/storage/` 下多存储卷（TF 卡）（#31）
+- **快捷键呼出聚焦搜索栏** — 主窗口弹出后自动聚焦搜索框
+- **Nightly 非正式版构建** — `nightly.yml` 每日定时 + 手动触发，从 `dev` 分支以版本号 `nightly` 构建 Windows/Linux/macOS 三平台安装包并以 prerelease 发布，更新检查绝不会指向该版本
+- **macOS 构建支持** — `build.py --macos` 生成 `.app`（PyInstaller `--windowed` + iconutil 从 icon.png 生成 icns）与 `.dmg`（hdiutil）；`build.yml` 新增 `build-macos` job；更新检查支持 `.dmg` 资产，安装走 `hdiutil attach` + `ditto` 复制到 `/Applications`
+- **macOS 双架构构建** — dmg 文件名带架构后缀 `OhMyMeme-v{version}-{arch}.dmg`，`--arch` 指定 arm64/x86_64（默认自动检测）；`build.yml`/`nightly.yml` 矩阵双架构（arm64 用 macos-latest，x86_64 用 macos-15-intel）；更新检查按本机架构选取对应 dmg
+
+## 变更
+
+- **默认收起侧边栏并关闭排序** — 新窗口默认折叠分组树、关闭拖拽排序（#56）
+- **静态资源强制 MIME** — 规避注册表 `.js` 被改写导致加载动画卡死（#44）
+- **S3 后端 OSS 兼容** — boto3 固定 SigV2 签名 + 虚拟主机寻址（#49）
+- **更新检查仅限稳定版** — `_parse_release` 跳过 prerelease 与含 `nightly` 的 tag
+- **搜索/筛选态拖拽使用** — 搜索、标签筛选时拖拽表情始终走原生文件拖拽（拖出到聊天窗口），不再误触发排序
+
+## 修复
+
+- **原生拖拽拖回误导入/误打开** — 原生拖拽进行中回拖到窗口，drop 处理器忽略并 `preventDefault`（不再弹导入浮层，也不被系统默认程序打开图片）；`DoDragDrop` 返回 `None`（取消）时不触发自动隐藏
+- **Linux 端排序开关按钮点击无效** — `.icon-btn` 内 SVG `pointer-events:none` + `addEventListener` 回退 + 标题栏 mousedown 排除按钮区（#57）
+- **局域网虚拟网卡发现回包错接口** — UDP 发现单播回包钉在广播到达接口（Linux `IP_PKTINFO` / Windows `IP_UNICAST_IF`）（#48）
+- **QQNT 手动路径重定向** — 环境探测成功时仍保留「选择配置文件/用户数据目录」入口，应对多用户 Windows（#30）
+- **分页空页回退** — 删除/搜索后当前页无数据时自动回退到可用末页
+- **macOS 运行崩溃/秒退** — pystray 在 macOS 需主线程抢占 NSApplication runloop，与 pywebview 主循环冲突（导致段错误或 `webview.start()` 立即返回），macOS 与 Linux 一样跳过系统托盘；`keyboard` 库 darwin 后端需 root 权限（`Error 13`），macOS 直接改用 pynput（CGEventTap）
+
+# v0.5.2 — 局域网互联（紧急修复）
+
+## 新增
+
+- **局域网互联（电脑端服务）** — 与同一局域网内的手机版 OhMyMeme 配对，互相同步表情包与配置（`lan.py`）。UDP 广播发现（响应不含密钥）→ TCP 握手（HMAC-SHA256 证明，3 次错误断开）→ AES-GCM 加密会话；命令包括 `pull_manifest`/`push_manifest`/`pull_file`/`push_file`/`get_config`/`send_config`/`device_info`；设置页可配置端口与连接密钥，开关仅临时生效不落盘，`lan_secret` 加密存储
+- **设备连接确认** — 手机端握手后发送 `device_info` 帧，电脑端弹窗展示设备信息（名称/型号/系统/版本），用户允许/拒绝后回 `{ok, approved, allow_secret_config}`；未确认期间其他命令挂起（超时 60s 拒绝）；`allow_secret_config` 供手机端动态显示密钥拉取/推送按钮
+- **允许密钥传输开关（仅内存）** — 设置页「允许密钥传输」勾选，开启前弹窗警示「请勿在公共网络或不信任的网络进行此操作！」；默认关闭，配置同步（`get_config`/`send_config`）剔除 FTP/S3/R2/WebDAV 密码字段，开启后包含密钥字段
+- **局域网互联文件安全（与手机端对称）** — `push_file` 四重校验：文件名安全、字节 ≤64MB、可选 `sha256` 一致、图片可解码且宽高 > 0；不合法字节绝不落盘，杜绝孤儿缓存文件
+- **局域网互联测试** — `tests/test_lan.py` 回环覆盖 UDP 发现、握手成功/失败/重试上限、加密帧、manifest 交换、文件 push/pull 去重、四重校验（坏哈希/非图片/超限/非法文件名）、配置双向同步（含/不含密钥）、设备确认（允许/拒绝/无回调放行）
+
+## 修复
+
+- **窗口未能正常置顶**
+- **排序未能上传云端**
+- **局域网安全收紧** — 手机端同步修配套：`push_file` 四重校验杜绝不合法字节落盘（防止恶意/损坏文件写入缓存并入库）
+
+# v0.5.0 — WebDAV 同步 / 拖拽到聊天窗口 / 添加分组弹窗 / GIF 隐写
+
+## 新增
+
+- **WebDAV 同步后端** — 在 FTP/S3/R2 之外新增第四种云端同步后端（WebDAV，兼容 Nextcloud 等），设置页可配置 URL/账号密码/根路径
+- **拖拽到聊天窗口** — 表情包可直接拖拽到 QQ/微信/桌面等外部应用（WinForms `DoDragDrop` + CF_HDROP 原生文件拖拽，`native_drag.py` 懒加载 pythonnet；替代失效的 HTML5 拖拽方案）
+- **添加分组弹窗** — 标题栏新增「添加分组」按钮，弹窗内输入分组名（支持选择已有分组）、搜索表情、两栏列表间移动并带 FLIP 动画、右侧拖拽排序后一键保存
+- **复制处理模式** — 设置页「复制处理」下拉（0 不处理 / 1 webp 缩放 / 2 转 gif / 3 转 gif 隐写原图），复制超大静态图自动缩放到限制内；旧配置自动迁移
+- **GIF 增量隐写（实验性）** — 复制模式 3 生成携带无损原图的隐写 GIF（`gif_stego.py`），支持 encode/decode/CLI；导入含 `STG3` 标记的 GIF 自动解码还原原图入库（`from_stego=1`），载体不入库
+- **QQNT 电脑端表情提取** — 从电脑版 QQ 收藏目录（`nt_qq/nt_data/Emoji/personal_emoji/Ori`）提取表情，支持 INI 定位、昵称获取、逐文件容错复制与魔数扩展名修正（`qqnt_extract.py`，GPL-3.0 衍生）（来源于[[香草味的纳西妲](https://github.com/VanillaNahida)]）
+- **日志导出** — 日志内存缓冲（上限 5000 条），设置页可导出当前运行日志，便于排查问题
+- **分组拖拽排序** — 分组/子分组内成员支持拖拽排序（`meme_collections.sort_order`），从最近使用删除、清空最近使用右键菜单项
+- **分组右键菜单** — 右键分组可执行更多管理操作
+- **更新内容显示** — 更新弹窗展示 GitHub Release 更新说明（支持 Markdown 渲染）
+- **push 动态维护远端 manifest** — push 过程中每 5s 用「远端已有 + 本次已确认」快照增量更新远端 manifest，部分失败中断前也上传快照，杜绝远端有文件无有效清单
+- **孤儿清理互斥与进度** — 远端孤儿文件删除前非阻塞获取互斥锁（同步进行中拒绝并发删除），删除过程复用进度条展示
+- **导入文件自动检测** — 导入时按文件头魔数识别真实扩展名（QQ 保存常为 .jpg 实为 png/webp），GIF 隐写解码判定同步改为魔数检测
+- **Linux 打包** — `build.yml` 新增 `build-linux` job，`build.py --package` 支持 AppImage/deb/rpm
+
+## 变更
+
+- **开源协议 MIT → GPL-3.0** — 因引入 GPL-3.0 衍生代码（QQNT 提取模块）改为 GPL-3.0
+- **仓库迁移至 [OhMyMeme/OhMyMeme](https://github.com/OhMyMeme/OhMyMeme)** — 更新 README、安装脚本、更新器、setup.py 中地址
+- **前端代码拆分重构** — `index.html`/`settings.html` 内联 CSS/JS 拆分为独立文件（`index.css`/`index.js`/`settings.css`/`settings.js`），拖拽排序重写为事件委托 + Pointer Events + 指针捕获 + FLIP 动画，模型驱动（#24）
+- **复制逻辑解耦** — 图片修饰（缩放/转格式/隐写）与复制到剪贴板分离为不同函数；复制模式配置保存方式调整
+- **导入行为调整** — 导入流程与 UI 细节优化
+- **GitHub Actions** — build job 拆分为 `build-windows` / `build-linux` 两个任务
+
+## 修复
+
+- **Ctrl 按键异常** — 全局快捷键 `suppress=True` 会安装 `WH_KEYBOARD_LL` 状态机吞掉按键事件，改为 `suppress=False`（#23）
+- **旧库 stego_of_hash 启动崩溃** — 旧数据库缺 `stego_of_hash` 列时 `CREATE INDEX` 抛 OperationalError 中断启动，索引创建移到迁移之后（#23）
+- **WebDAV 同步加固** — 失败项显示 / 互斥锁 / 中断清理 / 远端孤儿 GC（#22）
+- **Windows 窗口拖拽抖动** — 增量回退改用 `screenX/screenY`（`clientX/clientY` 是相对坐标，窗口滞后位移被当作反向增量回传形成反馈振荡）（#18）
+- **Linux 无边框窗口无法拖动** — 改用合成器原生拖动（`begin_move_drag` + `Gdk.CURRENT_TIME`），Wayland 下 `w.move()` 无效（#15 #16）
+- **右键菜单超出窗口边框** — 窗口边缘弹出时自动换向，避免菜单溢出无法使用（#17）
+- **Linux 更新问题** — AppImage 资产选取、无 `/dev/fuse` 时 `--appimage-extract-and-run` 回退、下载文件名规范化
+- **安装时文件占用** — 更新器启动安装程序前自动退出应用，避免 exe 文件锁
+
+## 特别鸣谢
+
+### 代码贡献
+
+- [Ze514](https://github.com/Ze514) — QQNT 电脑端表情提取（#14）、WebDAV 同步后端
+
+- [LorienYang](https://github.com/LorienYang) — 拖拽排序修复、WebUI 重构协作
+
+- [lateworker](https://github.com/lateworker) — 同步后端与测试协作
+
+  [QQ电脑版表情包导出模块](https://github.com/VanillaNahida/QQFavoriteExtract)来源于[[香草味的纳西妲](https://github.com/VanillaNahida)]
+
+# v0.4.1 — WebP 动图 / 浏览器拖入导入 / 核显优化
+
+## 新增
+
+- **WebP 动图支持** — 导入、存储、网格展示动画 WebP，剪贴板直接传送 WebP 原文件（CF_HDROP + 自定义 "WebP" 格式 + CF_DIB 回退），QQ/微信原生解码，保留动画与透明
+- **浏览器图片拖入导入** — 从浏览器直接拖拽图片到窗口即可导入，自动去掉 URL `@` 修饰参数，修正扩展名识别与 Base64 编码
+- **浏览器来源尝试获取原图** — 设置页新增开关，开启后从来源 URL 下载原图导入（无扩展名时按 Content-Type 推断），附网络连通性实时检测
+- **每日自动检测更新** — 每 24 小时静默检查一次更新，复用启动时的检测与弹窗逻辑
+- **从最近使用中删除** — 右键最近使用列表中的表情包可单独移除
+- **`--debug` 启动参数** — 输出全部 DEBUG 级别日志，便于排查
+
+## 变更
+
+- **核显优化** — 新增 `is_integrated_gpu()`（DXGI 检测主 GPU 专用显存 < 1GB 视为核显）；核显机器禁用 WebView2 GPU 合成（`--disable-gpu-compositing`），内存占用从 800MB 降至 120MB；独显保持完整硬件加速
+- **S3 上传重构** — 改用 presigned URL + `urllib` 替代 boto3 `put_object`，避免 chunked 编码污染上传文件
+- **托盘菜单英文化** — Show/Hide、Quit（原为中文）
+- **CI 拆分** — 独立 `check.yml`（lint+test）与 `build.yml`（Windows 打包），build 通过 `workflow_run` 在 check 通过后触发
+- **Linux 托盘判断** — 由 `is_wsl()` 改为 `platform.system() == "Linux"` 决定是否跳过系统托盘
+
+## 修复
+
+- **更新时软件未正常退出** — `shutdown()` 末尾 `os._exit(0)` 强制退出，清理残留非 daemon 线程（updater 线程池）
+- **平铺窗口管理器启动崩溃** — `window_x`/`window_y` 为 null 时不再抛 TypeError（#8）
+- **S3 同步检测失效** — `file_exists` 增加 `get_object` 回退，修复 `head_object` 误报 404（#7）
+- **拖拽排序真正生效** — 重写拖拽换位逻辑，修复 v0.4.0 遗留的拖拽排序 Bug
+- **浏览器拖拽图片导入异常** — 修正文件扩展名识别错误与 Base64 编码不正确问题
+- **ADB 路径拼接** — 修复路径拼接错误（#5）
+
+- ## 特别鸣谢
+
+  ### 代码贡献
+
+  - [[Ze514](https://github.com/Ze514)] — 拖拽排序（#12）、WebP 剪贴板（#11）、WebP 存储（#9）、浏览器拖拽导入（#6）、浏览器原图下载（#3）
+  - [[LorienYang](https://github.com/LorienYang)] — S3 上传与同步检测修复（#7）
+  - [[RainLuohua](https://github.com/RainLuohua)] — 平铺窗口管理器启动崩溃修复（#10）
+  - [[oralrinse](https://github.com/oralrinse)] — ADB 路径拼接修复（#5）
+
+  ### Issue 反馈
+
+  - [[Chiclats](https://github.com/Chiclats)] — 反馈平铺窗口管理器 (Niri) 下启动崩溃（#8）
+  - [[ylhcqN](https://github.com/ylhcqN)] — 反馈 Linux 原生环境（非 WSL）GTK 线程冲突（#2）
+  - [[LorienYang](https://github.com/LorienYang)] — 反馈 FTP/S3 同步状态显示异常（#1）
+  - [[oralrinse](https://github.com/oralrinse)] — 反馈 Win11 ADB 检测 0% 卡死及 TypeError（#4）
+
+  ### 还有各位群友们及B友们
+
+  ### 还有[QQ电脑版表情包导出模块](https://github.com/VanillaNahida/QQFavoriteExtract)贡献者[[香草味的纳西妲](https://github.com/VanillaNahida)]
+
+# v0.4.0 — 自定义排序 / 多级分组 / 最近使用
+
+## 新增
+
+- **表情包自定义排序** — 拖拽网格中的表情包即可调整顺序，自动保存到 manifest（version 3），支持丝滑 CSS transition 动画
+- **多级分组** — 分组支持嵌套（最多 3 层），右键大分组空白区域新建子分组；分组以文件夹卡片形式展现在网格中，点击进入子分组；分组 tab 按层级展开
+- **右键"加入分组"** — 右键表情包 → 加入分组 → 弹窗列出当前大分组下的所有子分组，支持新建分组后直接加入
+- **"最近使用"默认分组** — 自动收录使用过的表情包，按使用先后排列（最近使用的排最前），复制表情包时自动记录并刷新排序
+
+## 变更
+
+- **manifest 格式升级** — version 2 → version 3，分组支持嵌套结构（`children` 字段），启动时自动转换旧版 manifest
+- **搜索排序** — 默认按 `sort_order ASC, updated_at DESC` 排列
+
+## 修复
+
+- **manifest 空分组自动清理** — 嵌套场景下递归删除空分组
+- **WebP 动图不再转 GIF** — 直接向剪贴板传送 WebP 原文件（`_copy_webp_windows`：CF_HDROP + 自定义 "WebP" 格式 + CF_DIB 回退），QQ/微信原生解码 WebP，保留动画与透明，避免 GIF 转换带来的黑底/残影问题；移除 `_webp_to_gif` 相关逻辑
+
+## 已知问题
+
+- **拖拽排序仍有 Bug** — 自定义排序功能已开发，但在 pywebview 环境下拖拽交互不稳定，部分场景下表情包拖拽后显示异常，后续版本修复
+
+# v0.3.6 — 设置页版本显示不阻塞 / 新增镜像源
+
+## 新增
+
+- **新增 GitHub 镜像源** — 提高更新检查和下载的可用性
+
+## 修复
+
+- **打开设置页卡顿** — `initVersion` 原调用 `check_update()`（含网络 I/O），改为 `get_current_version()` 直接返回本地版本号，秒开
+
+# v0.3.5 — ADB 路径迁移 / 更新检查优化
+
+## 修复
+
+- **ADB 下载权限问题** — 安装版（Program Files）下无法写入 `.adb` 目录，现改为存放在 `%LOCALAPPDATA%/OhMyMeme/.adb`；启动时自动检测旧版（exe 目录）`.adb` 并迁移至新位置，迁移后清理旧目录
+- **更新检查错误提示不友好** — 设置页检查更新时若全部镜像和直连均失败，原返回原始 Python 异常（如 `URLError[WinError 10061]`），现改为显示"无法连接到 GitHub，请检查网络设置"
+
+# v0.3.4 — 导入菜单 / 剪贴板导入 / 同步状态检查 / 删除修复
+
+## 新增
+
+- **导入菜单** — 点击"导入"弹出三个选项：本地导入、从剪贴板导入、从手机版 QQ 缓存获取
+- **从剪贴板导入** — 读取系统剪贴板中的图片并导入，支持导入后重命名
+- **同步状态检查** — 设置页云端同步部分新增"检查同步状态"按钮，显示本地/云端数量差异
+
+## 修复
+
+- **删除本地所有表情包** — 修复 `build_manifest` 导入错误（`from .manifest import build_manifest` → `from .manifest import build as build_manifest`），删除后自动刷新主窗口
+- **剪贴板导入→文件列表时重命名异常** — 文件路径来源的导入未返回正确 ID 和 `original_name`，重命名弹窗显示空值；`_do_import` 改为返回导入的 ID 列表，`import_from_clipboard` 据此查询原文件名，回退为"未命名"
+- **移除源码运行场景下的开机自启清理逻辑** — 防止误删发行版注册的开机自启项；现在仅打包版本（`frozen`）处理开机自启同步
+
+# v0.3.3 — Bugfix: 收藏夹清空后自动返回主页
+
+## 修复
+
+- 在收藏夹中取消收藏最后一个表情包后，自动返回全部视图而非停留在空收藏夹
+
+# v0.3.2 — 默认快捷键更改 + ESC 关闭窗口
+
+## 变更
+
+- 默认快捷键 `Ctrl+Alt+M` → `Ctrl+Alt+N`（避免与网易云音乐冲突）
+- 主页按 ESC 关闭窗口
+- 设置页按 ESC 关闭窗口（已有，补充说明）
+
+# v0.3.1 — Bugfix: 构建/弹窗/取消导入
+
+## 修复
+
+- **adb-help.txt 未打包** — PyInstaller `--add-data` 添加该文件
+- **发行版 adb 弹窗** — `_run_adb`/`detect_adb` 在 Windows frozen 模式下使用 `CREATE_NO_WINDOW`
+- **取消导入不停止轮询** — 新增 `cancel_qq_import()` + `_QQ_CANCEL` 标志 + `_check_cancel()` 在各关键步骤检查；关闭覆盖层时自动取消
+
+# v0.3.0 — QQ 表情包导入 + ADB 调试日志
+
+## 新增
+
+- **QQ 表情包缓存导入** — 设置页新增"从手机版 QQ 缓存导入"按钮，自动检测/下载 ADB、启动服务、等待设备连接（300s 超时）、`adb pull` 拉取 QQ_Favorite 目录、魔数识别扩展名、打包 ZIP、另存为对话框保存
+- **魔数识别** — 支持 PNG/JPEG/GIF/WebP/BMP 无扩展名文件自动补全
+- **ADB 带进度下载** — 从 googledownloads.cn 下载 platform-tools，前端实时显示下载百分比
+- **进度覆盖层** — 导入过程分阶段显示（下载 ADB→启动服务→等待设备→拉取文件→处理→完成），300ms 轮询
+- **帮助按钮** — 等待设备阶段显示"不知道怎么办？"按钮，打开 `adb-help.txt`（含各大品牌开启 USB 调试教程）
+- **导入后引导** — ZIP 保存后提示用户筛选文件并一键导入
+- **`--debug-adb` 运行时日志** — 开启后所有 adb 命令记录到日志（命令、stdout、stderr、超时）
+
+# v0.2.2
+
+## 云端同步多线程
+
+- push/pull 使用 `ThreadPoolExecutor` 多线程传输
+- 配置项 `sync_threads`（默认 3，范围 1-8）
+- 每个工作线程创建独立后端连接（FTP/S3/R2 均适用）
+- `_sync_lock` 保护进度状态原子递增
+
+## 安装更新前自动退出应用
+
+- `run_downloaded_installer()` 启动安装程序后调用 `_schedule_quit()` 关闭窗口
+- 避免 exe 文件锁导致更新失败
+
+## 开机自启修复
+
+- 设置页开关现在正确读取真实系统状态（不再是 undefined）
+- `is_auto_start_enabled()` 改为仅检测注册表 Run 键（移除启动文件夹快捷方式检测）
+- `set_auto_start()` 仅操作注册表，不再创建/删除启动文件夹快捷方式
+- InnoSetup 安装程序改为写注册表 Run 键，不再创建启动文件夹快捷方式
+- `[InstallDelete]` 升级时自动清理旧版遗留的启动快捷方式
+- 源码运行时仅清理指向 python.exe 的注册项，不误删发行版
+
+## 启动参数
+
+- `--startup-debug`: 输出开机自启检测详情（注册表值、启动文件夹路径、快捷方式是否存在）
+- `--silent` 在源码启动时忽略配置文件的 `silent_start`（需显式传参）
+
+## OhMyMeme v0.2.1 更新日志
+
+### 新功能
+
+- **静默启动** — 开机自启时可静默托盘启动
+- **同步进度条** — 上传/下载实时显示进度百分比、速度、当前文件名，支持"后台运行"关闭弹窗，完成后弹窗显示结果
+- **进度显示设置** — 设置页新增 4 个开关：上传进度条 / 上传完毕提示 / 下载进度条 / 下载完毕提示
+- **危险操作区** — 设置页底部新增"删除本地所有表情包"和"删除云端所有表情包"，需双输入框均输入 `confirm` 才可执行
+- **配置版本追踪** — config.json 新增 `version` 字段，`0.2.0` → `0.2.1` 自动迁移，清理残留的 `window_width`/`window_height`
+
+### Bug 修复
+
+- **拖入导入** — pywebview 6.2.1 无 `on_drop` API（旧代码被 `try/except` 吞掉从未生效），重写为 JS File API + base64 → Bottle `/api/upload/`
+- **导入按钮** — `file_types` 格式修正（混入了描述文字导致过滤异常）
+- **窗口高度无效** — 配置中残留旧值覆盖了默认值，现改为硬编码 700×500，停止存储窗口尺寸
+- **右键菜单溢出** — 超出窗口右沿时自动向左偏移
+- **重命名** — 原来会改磁盘文件名（引起各种副作用），改为只改 DB `original_name`（显示名）
+- **远端下载显示名** — sync pull 时未从 manifest 读取 `name` 字段，下载后丢失原文件名
+- **导入临时文件残留** — `_upload_` 临时文件在导入完成后自动删除
+
+### 代码清理
+
+- 移除 `_on_drop` 死代码（pywebview 6.2.1 Windows CEF 不支持）
+- 项目文档：更新 `AGENTS.md`
+
+## **v0.2.0**
+
+增加更新功能
+AI优化加载速度及用户体验
+目前Nuitka打包360也反馈了，但安全起见暂时还是使用pyinstaller
+
+<img width="1099" height="904" alt="35ee4a78-bd22-4401-88c1-a727fcd03b70" src="https://github.com/user-attachments/assets/417e5ddf-6571-4ff5-bc39-671cf1f950e7" />
+
+## **v0.1.1 当前版本不会报毒**
+
+Nuitka打包会被很多杀毒软件杀死，正在与厂商协商ing...（目前**微软、火绒**已解决该问题）， 临时使用pyinstaller代替nuitka
+Linux正在做适配ing...
+
+<img width="1744" height="708" alt="QQ20260726-182501" src="https://github.com/user-attachments/assets/c00c7118-1d57-4e81-9adc-3fa5d7159b72" />
+<img width="1734" height="1056" alt="32C4CE62@056A0E0(07-26-18-11-43)" src="https://github.com/user-attachments/assets/aef2e533-d554-4945-a193-8c66441dbeaa" />
+
+## OhMyMeme v0.1.0
+
+轻量化跨平台表情包管理系统 — 突破表情包上限，快捷键呼出、搜索即复制。
+
+------
+
+### 功能
+
+- **系统托盘运行** — 最小化资源占用，后台常驻
+- **全局快捷键** — 默认 `Ctrl+Alt+M` 呼出/隐藏主面板
+- **表情管理** — 导入/搜索/标签分类/收藏/自定义分组
+- **一键复制** — 点击表情包自动复制到剪贴板（GIF 保留动画）
+- **拖放导入** — 直接拖拽图片到窗口即可导入
+- **右键菜单** — 重命名/收藏/添加分组/从分组移除/删除
+- **GIF 动图** — 网格内自动播放，可在设置中关闭
+- **分组筛选** — 按收藏夹或自定义分组过滤，点击标签+分组叠加搜索
+- **本地缓存** — 缩略图+原图双层缓存，离线可用
+- **缓存扫描** — 启动时自动扫描缓存目录，已有文件无需重复导入
+- **远程同步** — 支持 FTP / S3 / R2 三种后端，多设备同步
+- **无边框窗口** — 自定义标题栏，鼠标拖拽移动
+
+### 安装注意事项
+
+> ⚠️ **火绒** 和 **Microsoft Defender** 可能会将编译后的 exe 误报为病毒。如遇拦截，请添加到信任区。正准备向各厂商提交误报申诉，后续版本会逐步解决。
