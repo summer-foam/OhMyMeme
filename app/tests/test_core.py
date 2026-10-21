@@ -583,7 +583,8 @@ class TestHotkeyWatchdog(unittest.TestCase):
         self.assertTrue(hk._hook_health_check(now=130.0 + KEYBOARD_PROBE_TIMEOUT))
         self.assertIsNone(hk._probe_pending_at)
 
-    def test_probe_blocker_swallows_pending_probe_and_refreshes(self):
+    @mock.patch("src.hotkey.time.monotonic", return_value=100.5)
+    def test_probe_blocker_swallows_pending_probe_and_refreshes(self, monotonic):
         """pending 窗口内的 F15 探针被阻塞钩子吞掉并刷新心跳，防止泄漏到前台（issue #95）。"""
         import types
 
@@ -598,7 +599,8 @@ class TestHotkeyWatchdog(unittest.TestCase):
         hk._probe_pending_at = 100.0
         hk._hook_last_seen = 0.0
         self.assertFalse(blocker(types.SimpleNamespace(name="f15", scan_code=-126)))
-        self.assertGreaterEqual(hk._hook_last_seen, 100.0)
+        self.assertEqual(hk._hook_last_seen, 100.5)
+        monotonic.assert_called_once_with()
 
         # pending 窗口内：真实按键事件放行
         self.assertTrue(blocker(types.SimpleNamespace(name="a", scan_code=30)))

@@ -6,6 +6,7 @@ import threading
 import time
 import urllib.error
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import Mock
 
 import pytest
@@ -71,7 +72,7 @@ def framework_package(package):
 @pytest.fixture
 def manager(tmp_path, monkeypatch):
     # 默认封锁所有真实子进程启动和外部网络。
-    monkeypatch.setattr(nm.sys, "platform", "win32")
+    monkeypatch.setattr(nm, "sys", SimpleNamespace(platform="win32"))
     monkeypatch.setattr(nm, "_WindowsJob", FakeJob)
     process = Mock(pid=987654)
     process.poll.return_value = None
