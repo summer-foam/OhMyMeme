@@ -49,8 +49,13 @@ def api():
     bridge._qq_connection_lock = threading.Lock()
     bridge._qq_favorites = Mock(
         spec=[
-            "status", "list_favorites", "start_upload", "start_delete",
-            "progress", "cancel",
+            "status",
+            "list_favorites",
+            "start_upload",
+            "start_delete",
+            "progress",
+            "cancel",
+            "start_download",
         ]
     )
     bridge._qq_favorites.status.return_value = {"ok": True, "account": "123456789"}
@@ -101,8 +106,11 @@ def test_status_passes_expected_account_without_echoing_secret(connected):
 @pytest.mark.parametrize(
     "endpoint",
     [
-        "http://example.com:3000", "http://192.168.1.2:3000",
-        "http://0.0.0.0:3000", "file:///tmp/qq", "http://127.0.0.1.evil.test",
+        "http://example.com:3000",
+        "http://192.168.1.2:3000",
+        "http://0.0.0.0:3000",
+        "file:///tmp/qq",
+        "http://127.0.0.1.evil.test",
         "http://user:password@127.0.0.1:3000",
     ],
 )
@@ -116,7 +124,9 @@ def test_save_rejects_nonlocal_or_credentialed_endpoint(connected, endpoint):
     assert connected._cfg.writes == []
 
 
-@pytest.mark.parametrize("account", ["", "abc", "123x", "-123", "12.3", "123 456", "１２３"])
+@pytest.mark.parametrize(
+    "account", ["", "abc", "123x", "-123", "12.3", "123 456", "１２３"]
+)
 def test_save_rejects_nonnumeric_account(connected, account):
     # 无效账号不得改变原有连接。
     before = dict(connected._cfg.values)
@@ -171,7 +181,8 @@ def test_connection_change_clears_blank_token(connected, endpoint, account):
 def test_busy_rejects_connection_change(connected):
     # 进行中的任务继续使用原连接，拒绝修改任何参数。
     connected._qq_favorites.progress.return_value = {
-        "status": "running", "running": True
+        "status": "running",
+        "running": True,
     }
     before = dict(connected._cfg.values)
     result = connected.qq_favorites_save_connection(
@@ -212,8 +223,20 @@ def test_upload_requires_account(api, method):
 
 @pytest.mark.parametrize(
     "ids",
-    [None, [], "1", [0], [-1], [True], [1.5], ["1"], [1, "bad"],
-     [{"path": "C:/private.png"}], ["C:/private.png"], [1] * 5001],
+    [
+        None,
+        [],
+        "1",
+        [0],
+        [-1],
+        [True],
+        [1.5],
+        ["1"],
+        [1, "bad"],
+        [{"path": "C:/private.png"}],
+        ["C:/private.png"],
+        [1] * 5001,
+    ],
 )
 @pytest.mark.parametrize(
     "method", ["qq_favorites_upload_selected", "qq_favorites_upload_preview"]
@@ -238,9 +261,7 @@ def test_upload_resolves_database_filenames_and_deduplicates(connected, tmp_path
 
     assert connected.qq_favorites_upload_selected([2, 1, 2])["ok"] is True
     args = connected._qq_favorites.start_upload.call_args.args
-    assert args[:3] == (
-        "http://127.0.0.1:3000", "test-private-token", "123456789"
-    )
+    assert args[:3] == ("http://127.0.0.1:3000", "test-private-token", "123456789")
     assert [Path(path) for path in args[3]] == [second, first]
     assert connected._db.get_by_id.call_count == 2
     assert connected._webui._find_meme_file.call_count == 2
@@ -276,7 +297,9 @@ def test_upload_rejects_entire_batch_when_any_file_missing(
     connected._qq_favorites.start_upload.assert_not_called()
 
 
-def test_upload_preview_deduplicates_and_returns_only_display_fields(connected, tmp_path):
+def test_upload_preview_deduplicates_and_returns_only_display_fields(
+    connected, tmp_path
+):
     # 预览按首次选中顺序去重，仅暴露显示字段，不调用任何远端服务。
     first = tmp_path / "first.png"
     second = tmp_path / "second.gif"
@@ -303,7 +326,11 @@ def test_upload_preview_deduplicates_and_returns_only_display_fields(connected, 
         "total": 2,
         "items": [
             {"id": 2, "name": second.name, "thumbnail_url": "/api/thumb/" + "B" * 64},
-            {"id": 1, "name": "原始名称.png", "thumbnail_url": "/api/thumb/" + "a" * 64},
+            {
+                "id": 1,
+                "name": "原始名称.png",
+                "thumbnail_url": "/api/thumb/" + "a" * 64,
+            },
         ],
     }
     assert [call.args[0] for call in connected._db.get_by_id.call_args_list] == [2, 1]
@@ -324,7 +351,8 @@ def test_upload_preview_invalid_hash_has_no_thumbnail(connected, tmp_path, file_
     image = tmp_path / "image.png"
     image.write_bytes(b"image")
     connected._db.get_by_id.return_value = {
-        "filename": image.name, "file_hash": file_hash
+        "filename": image.name,
+        "file_hash": file_hash,
     }
     connected._find_meme_file.return_value = image
 
@@ -389,11 +417,13 @@ def test_upload_preview_accepts_real_database_rows_without_writes(connected, tmp
             "ok": True,
             "account": "123456789",
             "total": 1,
-            "items": [{
-                "id": meme_id,
-                "name": "真实数据库.png",
-                "thumbnail_url": "/api/thumb/" + "c" * 64,
-            }],
+            "items": [
+                {
+                    "id": meme_id,
+                    "name": "真实数据库.png",
+                    "thumbnail_url": "/api/thumb/" + "c" * 64,
+                }
+            ],
         }
         assert connection.total_changes == changes
         assert list(connection.iterdump()) == before
@@ -410,6 +440,39 @@ def test_delete_uses_saved_account_and_resource_ids(connected):
     connected._qq_favorites.start_delete.assert_called_once_with(
         "http://127.0.0.1:3000", "test-private-token", "123456789", resources
     )
+
+
+@pytest.mark.parametrize("resources", [None, ["resource-two", "resource-one"]])
+def test_download_uses_snapshot_ids_and_host_importer(connected, resources):
+    # 页面只能传资源 ID，导入回调由宿主创建，连接仍来自内存配置。
+    connected._qq_favorites.start_download.return_value = {
+        "ok": True,
+        "task_id": "download",
+    }
+    result = connected.qq_favorites_download(resources)
+    assert result == {"ok": True, "task_id": "download"}
+    args = connected._qq_favorites.start_download.call_args.args
+    assert args[:4] == (
+        "http://127.0.0.1:3000",
+        "test-private-token",
+        "123456789",
+        resources,
+    )
+    connected._webui._do_import = Mock(return_value={"ids": [9]})
+    assert args[4]("private-temp-image", "resource-one") == {"ids": [9]}
+    connected._webui._do_import.assert_called_once_with(
+        ["private-temp-image"], ["resource-one"]
+    )
+
+
+def test_download_requires_account_and_rejects_shutdown(api, connected):
+    # 退出或缺少预期账号时不启动任务。
+    connected._qq_shutting_down = True
+    assert connected.qq_favorites_download()["ok"] is False
+    connected._qq_shutting_down = False
+    connected._cfg.values["qq_favorites_account"] = ""
+    assert connected.qq_favorites_download()["ok"] is False
+    connected._qq_favorites.start_download.assert_not_called()
 
 
 def test_progress_and_cancel_delegate_without_connection_change(connected):

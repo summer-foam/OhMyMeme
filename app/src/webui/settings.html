@@ -249,7 +249,7 @@
         <input id="s-manifest-include-favorites" type="checkbox">将收藏夹写入同步清单（meme-index.json）
       </label>
       <label class="check-row" style="margin-bottom:4px">
-        <input id="s-cloud-direct" type="checkbox">云端直接使用
+        <input id="s-cloud-direct" type="checkbox">浏览云端表情（云端直接使用）
       </label>
       <p style="font-size:11.5px;color:var(--muted);margin-top:0;margin-bottom:12px;line-height:1.6">开启后，启动时从云端获取本地缺失表情的缩略图并显示在界面中（带云角标），点击即可下载并自动复制使用；开启期间每次同步会把本地缩略图一并上传到云端。</p>
 
@@ -331,8 +331,8 @@
         <div class="form-group">
           <label>签名版本</label>
           <select id="s3-signature-version">
-            <option value="s3">V2（兼容 OSS）</option>
-            <option value="s3v4">V4（AWS S3）</option>
+            <option value="s3v4">V4（默认，AWS S3 / R2 / MinIO）</option>
+            <option value="s3">V2（旧版 OSS 兼容）</option>
           </select>
         </div>
         <div class="ftp-row">
@@ -399,13 +399,15 @@
         </div>
       </div>
       <div id="s-sync-buttons" style="display:none">
-        <div style="display:flex;gap:8px;margin-top:14px">
+        <p style="font-size:11.5px;color:var(--muted);line-height:1.6">上传：把本地新增或变更的原图、清单及已启用的缩略图写入云端。下载：把云端原图保存到本机并合并标签、分组与收藏。默认保留两端独有文件；勾选上方删除选项后才会删除对应端的多余文件。</p>
+        <p style="font-size:11.5px;color:var(--muted);line-height:1.6">测试连接、上传与下载会先保存当前云端设置。连接测试只读取云端，不上传测试文件；云端浏览需已有 OhMyMeme 清单与缩略图，可先在有表情的设备上传一次。</p>
+        <div style="display:flex;gap:8px;margin-top:14px;flex-wrap:wrap">
           <button id="btn-ftp-test" class="btn btn-secondary btn-sm btn-flex" onclick="testSync()">测试连接</button>
           <button class="btn btn-secondary btn-sm btn-flex" onclick="checkSyncStatus()">检查同步状态</button>
           <button id="btn-sync-push" class="btn btn-primary btn-sm btn-flex" onclick="syncPush()">上传到远端</button>
           <button id="btn-sync-pull" class="btn btn-primary btn-sm btn-flex" onclick="syncPull()">从远端下载</button>
         </div>
-        <div id="s-sync-status" style="margin-top:6px"></div>
+        <div id="s-sync-status" role="status" aria-live="polite" style="margin-top:6px;overflow-wrap:anywhere"></div>
         <div style="display:flex;gap:8px;margin-top:12px;align-items:center;flex-wrap:wrap">
           <span style="font-size:12px;color:var(--muted)">云端孤儿文件</span>
           <button id="btn-orphan-scan" class="btn btn-secondary btn-sm" onclick="scanOrphans()">扫描</button>

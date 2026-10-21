@@ -19,12 +19,19 @@ const loggedIn = ref(false)
 const qrImage = ref('')
 const expectedAccount = ref('')
 const confirmStop = ref(false)
+const install = ref<{ running: boolean; ok?: boolean; state?: string; error?: string; directory?: string; downloaded?: number; total?: number }>({running: false})
+const installError = ref('')
+const installCancelling = ref(false)
+const installVersion = 'v4.18.38'
+let installedDirectory = ''
 let generation = 0
 let disposed = false
 let timer: ReturnType<typeof setTimeout> | undefined
-const locked = computed(() => props.disabled || !!action.value)
+const locked = computed(() => props.disabled || !!action.value || install.value.running)
 const framework = computed(() => mode.value === 'framework')
 const packageName = computed(() => framework.value ? 'NapCat Framework 原始发布包' : 'NapCat Shell 原始发布包')
+const installState = computed(() => ({idle: '尚未下载', downloading: '正在下载发布包', extracting: '正在解压发布包', validating: '正在检查发布包', installing: '正在安装', done: '安装完成', completed: '安装完成', installed: '安装完成', cancelled: '安装已取消', canceled: '安装已取消', error: '安装失败', failed: '安装失败'} as Record<string, string>)[install.value.state || ''] || (install.value.running ? '正在准备安装' : '安装状态待检查'))
+const installBytes = computed(() => `${((install.value.downloaded || 0) / 1048576).toFixed(1)} MiB${install.value.total ? ` / ${(install.value.total / 1048576).toFixed(1)} MiB` : ' · 总大小未知'}`)
 const loginText = computed(() => loggedIn.value ? 'QQ 已登录，请核对预期账号后接入收藏。' : ({ waiting_qr: '等待登录二维码', qr_pending: '正在生成登录二维码', qr_ready: '请用手机 QQ 扫码登录', waiting_scan: '请用手机 QQ 扫码登录', scanned: '已扫码，请在手机上确认', expired: '二维码已过期，请刷新', qr_expired: '二维码已过期，请刷新', offline: 'QQ 已离线，请重新登录', loading: '正在准备登录' } as Record<string, string>)[phase.value] || '正在等待 QQ 登录')
 
 // 仅展示经过认证字段脱敏的错误，不读取或回显后台 token。
@@ -38,12 +45,64 @@ function clearLogin() { qrImage.value = ''; loggedIn.value = false; phase.value 
 // 取消后续轮询，已发请求由代次守卫丢弃。
 function stopPolling() { if (timer) clearTimeout(timer); timer = undefined }
 
+// 恢复安装进度，完成后检查目录，启动仍由用户明确点击。
+async function pollInstall(current: number) {
+  const result = await api('napcat_install_progress')
+  if (current !== generation || !props.open) return
+  if (!result || typeof result.running !== 'boolean') {
+    installError.value = '无法读取安装进度，请重新检查安装状态。'
+    return
+  }
+  install.value = result
+  emit('busy', !!action.value || result.running)
+  if (result.error) installError.value = errorText(result, 'NapCat 安装失败。')
+  else if (!result.running && result.ok === false && !['idle', 'cancelled', 'canceled'].includes(result.state || '')) installError.value = 'NapCat 安装失败，请重新下载安装。'
+  else if (result.state !== 'idle') installError.value = ''
+  if (result.running) return
+  installCancelling.value = false
+  if (!result.ok || !result.directory || installedDirectory === result.directory) return
+  if (result.mode === 'shell' || result.mode === 'framework') mode.value = result.mode
+  installedDirectory = String(result.directory)
+  directory.value = installedDirectory; qqPath.value = ''; inspected.value = false
+  const checked = await api('napcat_runtime_inspect', directory.value, '', mode.value)
+  if (current !== generation || !props.open) return
+  inspected.value = checked?.ok === true
+  if (!inspected.value) { installError.value = errorText(checked, '发布包已下载，但目录检查失败，请检查 QQ 安装情况后重试检查目录。'); return }
+  directory.value = String(checked.directory || directory.value); qqPath.value = String(checked.qq_path || '')
+  message.value = '安装并检查完成，请点击启动按钮继续。'
+}
+
+// 下载固定版本的原始发布包，不自动启动 QQ。
+async function startInstall() {
+  if (running.value || !known.value) return
+  await perform('install', async current => {
+    installError.value = ''; installedDirectory = ''; inspected.value = false
+    const result = await api('napcat_install_start', mode.value, installVersion)
+    if (disposed || current !== generation || !props.open) return
+    if (!result?.ok) { installError.value = errorText(result, '无法开始下载 NapCat，请重试。'); return }
+    install.value = {running: true, state: 'downloading', downloaded: 0, total: 0}
+  })
+}
+
+// 取消只终止安装任务，保留已存在的运行目录。
+async function cancelInstall() {
+  if (!install.value.running || installCancelling.value || action.value) return
+  installCancelling.value = true
+  const current = generation
+  const result = await api('napcat_install_cancel')
+  if (disposed || current !== generation || !props.open) return
+  if (!result?.ok) { installCancelling.value = false; installError.value = errorText(result, '取消安装失败，请重试。'); return }
+  await poll(current)
+}
+
 // 读取进程与登录快照，仅允许 PNG 的内联 base64 图片。
 async function poll(current = generation) {
   stopPolling()
+  await pollInstall(current)
+  if (current !== generation || !props.open) return
   const result = await api('napcat_runtime_status')
   if (current !== generation || !props.open) return
-  const restoreMode = !known.value || result?.running === true
+  const restoreMode = (!known.value || result?.running === true) && !install.value.running
   known.value = result?.ok === true
   managed.value = result?.managed === true
   running.value = result?.running === true
@@ -77,7 +136,7 @@ async function perform(name: string, task: (current: number) => Promise<void>) {
   const current = generation
   try { await task(current) }
   finally {
-    action.value = ''; emit('busy', false)
+    action.value = ''; emit('busy', install.value.running)
     if (!disposed && props.open) await poll(generation)
   }
 }
@@ -174,6 +233,17 @@ onBeforeUnmount(() => { disposed = true; generation++; stopPolling(); clearLogin
     <p v-if="framework" class="napcat-help">Framework 通过所选原始发布包的加载器启动桌面 QQ，并与该桌面 QQ 共用登录会话。不能在不重启 QQ 的情况下附加到已运行的 QQ；请先自行退出原有同账号 QQ。</p>
     <p v-else class="napcat-help">Shell 在后台运行，启动后按提示扫码登录。同账号的桌面 QQ 可能发生冲突，请先自行退出原有同账号 QQ。</p>
     <p v-if="framework" class="napcat-notice">停止 Framework 或退出 OhMyMeme 工具，会关闭本工具启动的桌面 QQ，并中断登录与收藏连接。外部 QQ 不会被接管或关闭。</p>
+    <section class="napcat-install" aria-labelledby="napcat-install-title">
+      <h4 id="napcat-install-title">下载 NapCat {{ installVersion }}</h4>
+      <p class="napcat-help">下载所选模式的原始发布包到工具目录。完成后检查目录，由你手动启动。</p>
+      <button type="button" :disabled="locked || !known || running" @click="startInstall">{{ action === 'install' ? '正在提交…' : '自动下载安装' }}</button>
+      <template v-if="install.running || install.state && install.state !== 'idle'">
+        <p role="status">{{ installState }}<span v-if="install.running || install.downloaded"> · {{ installBytes }}</span></p>
+        <progress v-if="install.running || install.downloaded" :value="install.total ? Math.min(install.downloaded || 0, install.total) : undefined" :max="install.total || 1" aria-label="NapCat 下载进度" />
+        <button v-if="install.running" type="button" :disabled="installCancelling || !!action" @click="cancelInstall">{{ installCancelling ? '正在取消…' : '取消安装' }}</button>
+      </template>
+      <div v-if="installError" class="napcat-notice" role="alert"><p>{{ installError }}</p><button type="button" :disabled="!!action" @click="poll()">重新检查安装状态</button></div>
+    </section>
     <label>{{ packageName }}目录<input :value="directory" readonly :placeholder="`请选择${packageName}目录`" aria-label="已选择的 NapCat 目录" /></label>
     <div class="napcat-actions"><button type="button" :disabled="locked || running" @click="pickDirectory">{{ action === 'pick' ? '选择中…' : '选择目录' }}</button><button type="button" :disabled="locked || !directory || running" @click="inspectDirectory">{{ action === 'inspect' ? '检查中…' : '检查目录' }}</button></div>
     <label>QQ 程序路径（可选）<input v-model="qqPath" :disabled="locked || running" placeholder="留空由后台检测" autocomplete="off" spellcheck="false" @input="inspected = false" /></label>
@@ -215,5 +285,8 @@ onBeforeUnmount(() => { disposed = true; generation++; stopPolling(); clearLogin
 .napcat-notice .napcat-actions { margin-top: 12px; }
 .napcat-login { display: flex; flex-direction: column; align-items: stretch; gap: 12px; }
 .napcat-login img { align-self: center; width: min(208px, 100%); aspect-ratio: 1; object-fit: contain; padding: 8px; background: #fff; border-radius: 6px; }
+.napcat-install { display: flex; flex-direction: column; align-items: stretch; gap: 10px; padding: 12px; background: var(--surface); border-radius: 6px; }
+.napcat-install h4 { margin: 0; font-size: 14px; font-weight: 600; }
+.napcat-install progress { width: 100%; height: 8px; accent-color: var(--primary); }
 @media (max-width: 760px) { .napcat-runtime button { min-height: 44px; } }
 </style>

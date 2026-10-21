@@ -4,9 +4,9 @@
 #define MyAppName "OhMyMeme"
 #define MyAppVersion "0.1.0"
 #define MyAppPublisher "OhMyMeme"
-#define MyAppURL "https://github.com/OhMyMeme/OhMyMeme"
+#define MyAppURL "https://github.com/summer-foam/OhMyMeme"
 #define MyAppExeName "OhMyMeme.exe"
-#define SourceDir "..\..\dist\src.dist"
+#define SourceDir "..\..\dist\OhMyMeme"
 
 [Setup]
 AppId={{B8F4A3D2-1C5E-4A7B-9D6F-8E2C3A1B5D7F}
@@ -30,6 +30,7 @@ CloseApplications=yes
 UninstallDisplayIcon={app}\{#MyAppExeName}
 UninstallDisplayName={#MyAppName} {#MyAppVersion}
 ArchitecturesInstallIn64BitMode=x64compatible
+ArchitecturesAllowed=x64compatible
 
 [Languages]
 Name: "chinesesimplified"; MessagesFile: "compiler:Languages\ChineseSimplified.isl"

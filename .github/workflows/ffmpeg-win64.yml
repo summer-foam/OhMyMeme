@@ -1,0 +1,37 @@
+name: FFmpeg Win64
+
+on:
+  workflow_call:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+defaults:
+  run:
+    working-directory: app
+
+jobs:
+  build-ffmpeg:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Cache ffmpeg output
+        id: cache
+        uses: actions/cache@v4
+        with:
+          path: app/build/ffmpeg-win64/out
+          key: ffmpeg-win64-${{ runner.os }}-${{ hashFiles('app/scripts/ffmpeg/build_win64.sh') }}
+      - name: Install cross toolchain
+        if: steps.cache.outputs.cache-hit != 'true'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends gcc-mingw-w64-x86-64 g++-mingw-w64-x86-64 nasm pkg-config xz-utils
+      - name: Build trimmed ffmpeg
+        if: steps.cache.outputs.cache-hit != 'true'
+        run: bash scripts/ffmpeg/build_win64.sh
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ffmpeg-win64
+          path: app/build/ffmpeg-win64/out/ffmpeg.exe
+          if-no-files-found: error

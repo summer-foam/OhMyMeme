@@ -280,9 +280,9 @@ class _S3Backend(_SyncBackend):
             addressing = self.cfg.get("s3_addressing_style", "virtual")
             if addressing not in ("virtual", "path"):
                 addressing = "virtual"
-            sig_ver = self.cfg.get("s3_signature_version", "s3")
+            sig_ver = self.cfg.get("s3_signature_version", "s3v4")
             if sig_ver not in ("s3", "s3v4"):
-                sig_ver = "s3"
+                sig_ver = "s3v4"
             config = BotoConfig(
                 signature_version=sig_ver,
                 s3={"payload_signing_enabled": False, "addressing_style": addressing},
@@ -301,8 +301,7 @@ class _S3Backend(_SyncBackend):
         pass
 
     def upload_file(self, local_path, remote_path):
-        # V2 签名下 boto3 put_object 不走 chunked 编码，直接用 SDK 上传
-        # （presigned URL + urllib 会因多出的 Content-Type 与签名不匹配，OSS 拒绝）
+        # 保留 SDK put_object，兼容显式选择的 OSS V2 签名。
         try:
             with open(local_path, "rb") as f:
                 data = f.read()
@@ -323,25 +322,52 @@ class _S3Backend(_SyncBackend):
             resp = self.client.get_object(
                 Bucket=self.bucket, Key=self._key(remote_path)
             )
-            raw = resp["Body"].read()
-            with open(local_path, "wb") as f:
-                f.write(raw)
+            body = resp["Body"]
+            try:
+                with open(local_path, "wb") as f:
+                    shutil.copyfileobj(body, f, length=1024 * 1024)
+            finally:
+                body.close()
             return True
         except Exception as e:
             logger.warning("download failed %s: %s", remote_path, e)
             return False
 
     def file_exists(self, path):
+        # 只有明确不存在才返回 False，鉴权或网络失败不能当作空云端。
         key = self._key(path)
         try:
             self.client.head_object(Bucket=self.bucket, Key=key)
             return True
-        except Exception:
+        except Exception as e:
+            code = str(getattr(e, "response", {}).get("Error", {}).get("Code", ""))
+            if code in ("404", "NoSuchKey", "NotFound"):
+                return False
+            if code not in ("405", "501", "MethodNotAllowed", "NotImplemented"):
+                raise SyncError("S3 文件检查失败: %s" % e) from e
             try:
                 self.client.get_object(Bucket=self.bucket, Key=key)["Body"].close()
                 return True
-            except Exception:
-                return False
+            except Exception as fallback_error:
+                code = str(
+                    getattr(fallback_error, "response", {})
+                    .get("Error", {})
+                    .get("Code", "")
+                )
+                if code in ("404", "NoSuchKey", "NotFound"):
+                    return False
+                raise SyncError(
+                    "S3 文件检查失败: %s" % fallback_error
+                ) from fallback_error
+
+    def test_connection(self):
+        # 只读探测实际存储桶与前缀，不创建测试对象。
+        try:
+            self.client.list_objects_v2(
+                Bucket=self.bucket, Prefix=self.prefix, MaxKeys=1
+            )
+        except Exception as e:
+            raise SyncError("S3 连接测试失败: %s" % e) from e
 
     def delete_file(self, path):
         try:
@@ -356,18 +382,13 @@ class _S3Backend(_SyncBackend):
         if prefix and not prefix.endswith("/"):
             prefix += "/"
         keys = []
-        kwargs = {"Bucket": self.bucket, "Prefix": prefix}
-        while True:
-            resp = self.client.list_objects_v2(**kwargs)
+        paginator = self.client.get_paginator("list_objects_v2")
+        for resp in paginator.paginate(Bucket=self.bucket, Prefix=prefix):
             for obj in resp.get("Contents", []):
                 key = obj["Key"]
                 if key.endswith("/"):
                     continue
                 keys.append(key[len(prefix) :])
-            if resp.get("IsTruncated"):
-                kwargs["ContinuationToken"] = resp.get("NextContinuationToken")
-            else:
-                break
         return keys
 
     def close(self):
@@ -689,6 +710,9 @@ class _WebDAVBackend(_SyncBackend):
         except ET.ParseError as e:
             raise SyncError("WebDAV PROPFIND 响应不是合法 XML: %s" % e) from e
         for response in root.findall("{DAV:}response"):
+            # 集合 href 不一定带尾部斜杠，按 DAV 资源类型排除目录。
+            if response.find(".//{DAV:}resourcetype/{DAV:}collection") is not None:
+                continue
             href_el = response.find("{DAV:}href")
             if href_el is None or href_el.text is None:
                 continue
@@ -785,7 +809,7 @@ def _fetch_remote_memes(bk, remote_root):
         return {
             m["filename"]: m
             for m in rdata.get("memes", [])
-            if _safe_remote_fname(m.get("filename", ""))
+            if isinstance(m, dict) and _safe_remote_fname(m.get("filename", ""))
         }
     except SyncError:
         raise
@@ -808,6 +832,7 @@ def _push_worker(entries, remote_root, cache_dir):
     try:
         for entry in entries:
             fname = entry["filename"]
+            _update_sync_state(current_file=fname)
             local_file = cache_dir / fname
             fsize = local_file.stat().st_size if local_file.exists() else 0
             rem_path = remote_root.rstrip("/") + "/" + REMOTE_MEME_DIR + "/" + fname
@@ -877,6 +902,7 @@ def _pull_worker(entries, remote_root, cache_dir, db):
         pass
     try:
         for fname, rentry in entries:
+            _update_sync_state(current_file=fname)
             if not _safe_remote_fname(fname):
                 local_results["skipped"] += 1
                 _increment_sync_progress(files_add=1)
@@ -1503,14 +1529,17 @@ def push(delete_remote: bool = None) -> dict:
 
 def sync_test() -> str:
     """测试当前配置的存储后端连接是否可用，返回 'ok' 或错误信息"""
+    bk = None
     try:
         bk = _get_backend()
         bk.connect()
         bk.test_connection()
-        bk.close()
         return "ok"
     except Exception as e:
         return str(e)
+    finally:
+        if bk is not None:
+            bk.close()
 
 
 def _apply_remote_collections(remote_data: dict):

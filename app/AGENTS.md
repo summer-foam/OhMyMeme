@@ -11,6 +11,11 @@
 - `src/napcat_manager.py`：外部原始发布包只读检查、私有运行副本、Windows 自有进程树生命周期、WebUI 登录状态与二维码，以及受控收藏 HTTP 连接。禁止下载或修改 NapCat 源码；禁止接管或批量终止外部 QQ。
 - 管理器 inspect/start 第三个参数 `mode` 仅允许 `shell` / `framework`，默认 shell。Framework 使用原包 napimain/napiloader/nativeLoader 入口并保留桌面窗口；运行态禁止切换。UI 必须告知停止或退出会关闭本工具启动的桌面 QQ。
 - `napcat_*` 桥接不能向浏览器返回 WebUI 凭据或内部 OneBot 令牌；收藏任务运行期间不得切换连接或停止适配器。运行目录不参与局域网配置同步。
+- `qq_favorites_download(res_ids=None)` 仅处理最近成功拉取的账号快照，与上传/删除共用串行任务；HTTPS CDN 白名单、公网解析固定连接、64MiB 上限、MD5/Pillow 校验后通过 `_do_import` 入库。不得把快照成功称为服务端完整备份。
+- `napcat_installer.py` 仅安装官方固定兼容版本原始发布包，强制 release digest 校验、受限重定向、安全 ZIP 与原子落盘；安装不启动 QQ。`napcat_install_*` 桥接与运行状态分离。
+- S3 默认签名 V4，`s3_signature_version="s3"` 仅供显式旧服务兼容；连接测试只读限定前缀列表。更换云连接字段时重置云清单。真实云端联调需要独立目标与用户设置凭据。
+- `window_dpi.watch_window_dpi` 在实际窗口 shown 后安装原生 WM_DPICHANGED 挂钩，保持跨屏逻辑尺寸；销毁时移除，不使用轮询或 CSS 缩放。
+- 生效 CI 位于仓库根 `.github/workflows`，working-directory 为 app；发布默认关闭，缺必需 helper/ffmpeg/安装工具不得产出标为完整的包。自动更新指向本 fork。
 
 ## 项目概述
 轻量化跨平台表情包管理系统，突破表情包数量限制，支持全局快捷键呼出、搜索复制、FTP/S3/R2 同步、局域网互联。

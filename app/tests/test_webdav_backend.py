@@ -257,6 +257,21 @@ class TestSyncTestWebDAV(unittest.TestCase):
 
 class TestWebDAVList(unittest.TestCase):
     @patch("src.sync.urllib.request.urlopen")
+    def test_collection_without_trailing_slash_is_not_a_file(self, urlopen):
+        # 一些服务返回无尾斜杠的集合地址，不能计为孤儿文件。
+        body = (
+            b'<D:multistatus xmlns:D="DAV:">'
+            b"<D:response><D:href>/dav/memes</D:href><D:propstat><D:prop>"
+            b"<D:resourcetype><D:collection/></D:resourcetype>"
+            b"</D:prop></D:propstat></D:response>"
+            b"<D:response><D:href>/dav/memes/a.png</D:href></D:response>"
+            b"</D:multistatus>"
+        )
+        urlopen.return_value = _FakeResp(207, body)
+        bk = _make_backend(url="https://host/dav")
+        self.assertEqual(bk.list_files("memes"), ["a.png"])
+
+    @patch("src.sync.urllib.request.urlopen")
     def test_unquotes_href(self, urlopen):
         body = (
             b'<?xml version="1.0"?><D:multistatus xmlns:D="DAV:">'

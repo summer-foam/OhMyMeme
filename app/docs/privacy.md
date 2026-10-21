@@ -1,6 +1,6 @@
 # OhMyMeme 隐私策略 / Privacy Policy
 
-最后更新 / Last updated：2026-10-18
+最后更新 / Last updated：2026-10-21
 
 本文件同时用作 Microsoft Store 上架所需的「隐私策略 URL」
 
@@ -99,4 +99,8 @@ QQ 收藏管理仅在用户操作时连接用户配置的本机 NapCat OneBot HT
 
 The QQ favorites feature connects to a user-configured local NapCat OneBot HTTP service on loopback only. User actions send list, local image path, hash, add, or delete requests. The access token remains in process memory. Image previews request HTTP(S) image URLs returned by QQ without the NapCat token.
 
-受控启动使用用户选择的 NapCat 原始发布包及已安装 QQ，复制到应用私有运行目录并生成独立配置。二维码和登录状态通过本机 WebUI 读取。该运行目录可能包含 NapCat 自身维护的配置、令牌和日志，不参与本工具的局域网配置同步；不要公开分享。工具不收集 QQ 密码，也不自动下载 NapCat 或 QQ。
+受控启动使用用户选择或手动触发下载安装的 NapCat 原始发布包及已安装 QQ，复制到应用私有运行目录并生成独立配置。二维码和登录状态通过本机 WebUI 读取。该运行目录可能包含 NapCat 自身维护的配置、令牌和日志，不参与本工具的局域网配置同步；不要公开分享。工具不收集 QQ 密码，也不自动下载 QQ。
+
+用户点击下载 NapCat 时，工具连接 `api.github.com` 获取 `NapNeko/NapCatQQ` 官方发布信息，并从 `github.com` 及其 GitHub 发布资产域名下载原始发布包，校验 SHA-256 后安装至本机私有目录，不自动执行。用户将 QQ 收藏下载到本地库时，工具请求 QQ 图片 CDN（`p.qpic.cn`、`gchat.qpic.cn`、`c2cpicdw.qpic.cn`），校验图片哈希后存入本地库。图片请求不携带 NapCat 令牌。
+
+Downloading NapCat is user-triggered: the app queries official `NapNeko/NapCatQQ` release metadata on `api.github.com`, downloads original packages from GitHub release asset hosts, and verifies SHA-256 before local installation without executing them. Importing QQ favorites downloads images from QQ CDN hosts (`p.qpic.cn`, `gchat.qpic.cn`, `c2cpicdw.qpic.cn`) and verifies their hashes before local import. These image requests do not include NapCat credentials.

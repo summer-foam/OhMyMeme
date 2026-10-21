@@ -4,6 +4,8 @@
 
 当前已接入 OhMyMeme UI，支持 Shell / Framework 管理、QQ 收藏浏览、批量上传与删除，以及滑动工作区和逐显示器 DPI 感知。`qq_probe.py` 保留为 Python 3.12 标准库链路验证程序。
 
+现已增加 QQ 收藏快照下载入库、官方 NapCat 校验安装、S3 V4 / WebDAV 云端流程修复和真实混合 DPI 跨屏尺寸处理。完整使用说明见 [app/README.md](app/README.md)。生效的 CI 和可选发布工作流位于根目录 `.github/workflows`。QQ 接口没有已确认的分页／容量契约，普通 QQ 的无重启附加尚不支持；程序不会把这两项标记为已验证。
+
 ## 早期链路验证记录（2026-10-20）
 
 - QQ NT 安装版本：9.9.36-53644。

@@ -1,0 +1,149 @@
+name: Windows packages and optional release
+
+on:
+  push:
+    branches: [master]
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Version X.Y.Z (required for release; blank builds the source version)'
+        type: string
+        default: ''
+      publish:
+        description: 'Publish a GitHub Release in this repository after verification'
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+concurrency:
+  group: windows-release-${{ github.ref }}
+  cancel-in-progress: false
+
+defaults:
+  run:
+    working-directory: app
+
+jobs:
+  prepare:
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Validate requested version
+        id: version
+        env:
+          REQUESTED_VERSION: ${{ inputs.version || '' }}
+          PUBLISH: ${{ inputs.publish || false }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          python - <<'PY'
+          import os
+          import re
+          import subprocess
+          from pathlib import Path
+
+          requested = os.environ['REQUESTED_VERSION']
+          publish = os.environ['PUBLISH'] == 'true'
+          if publish and not requested:
+              raise SystemExit('Release requires an explicit version X.Y.Z')
+          source = re.search(r'__version__\s*=\s*"([^"]+)"', Path('src/__init__.py').read_text(encoding='utf-8'))
+          version = requested or source.group(1)
+          if not re.fullmatch(r'[0-9]+\.[0-9]+\.[0-9]+', version):
+              raise SystemExit('Version must be X.Y.Z')
+          if publish:
+              result = subprocess.run(['git', 'ls-remote', '--exit-code', '--tags', 'origin', 'refs/tags/' + version], capture_output=True, text=True)
+              if result.returncode != 2:
+                  raise SystemExit('Tag already exists or remote tag check failed')
+          with open(os.environ['GITHUB_OUTPUT'], 'a', encoding='utf-8') as output:
+              output.write('version=' + version + '\n')
+          PY
+
+  verify:
+    needs: prepare
+    uses: ./.github/workflows/check.yml
+
+  ffmpeg:
+    needs: prepare
+    uses: ./.github/workflows/ffmpeg-win64.yml
+
+  build-windows:
+    needs: [prepare, verify, ffmpeg]
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: app/package-lock.json
+      - uses: actions/download-artifact@v4
+        with:
+          name: ffmpeg-win64
+          path: app/ffmpeg-win64
+      - name: Install dependencies and Inno Setup
+        run: |
+          python -m pip install -r requirements.txt
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          choco install innosetup --no-progress -y
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          npm ci
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          npm run build
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Build portable ZIP and installer (unsigned)
+        env:
+          BUILD_VERSION: ${{ needs.prepare.outputs.version }}
+        run: python scripts/build.py --windows --version $env:BUILD_VERSION --lang en
+      - name: Verify bundled helper and ffmpeg
+        run: |
+          python scripts/build.py --verify-helper --lang en
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          python scripts/build.py --verify-ffmpeg --lang en
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Generate checksums
+        run: |
+          $packages = @(Get-ChildItem dist/OhMyMeme-*-windows-x64-portable.zip) + @(Get-ChildItem dist/OhMyMeme-*-setup.exe)
+          if ($packages.Count -ne 2) { throw 'Expected exactly one portable ZIP and one installer' }
+          $lines = $packages | Sort-Object Name | ForEach-Object { '{0}  {1}' -f (Get-FileHash $_.FullName -Algorithm SHA256).Hash.ToLower(), $_.Name }
+          $lines | Set-Content dist/SHA256SUMS.txt -Encoding ascii
+          'Windows x64 packages are unsigned. NapCat/QQ third-party distributions are not bundled. Portable refers to extraction without installation; user data uses the application data directories.' | Out-File $env:GITHUB_STEP_SUMMARY -Append
+      - uses: actions/upload-artifact@v4
+        with:
+          name: windows-packages
+          path: |
+            app/dist/OhMyMeme-*-windows-x64-portable.zip
+            app/dist/OhMyMeme-*-setup.exe
+            app/dist/SHA256SUMS.txt
+          if-no-files-found: error
+
+  publish:
+    if: inputs.publish
+    needs: [prepare, build-windows]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: windows-packages
+          path: app/release-assets
+      - name: Publish verified packages to this repository
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_VERSION: ${{ needs.prepare.outputs.version }}
+        run: |
+          cat > release-notes.md <<'EOF'
+          Windows x64: download the portable ZIP or the Inno Setup installer.
+
+          These packages are unsigned. SHA256SUMS.txt records package checksums.
+          NapCat and QQ third-party distributions are not bundled; the application provides their installation/management integration.
+          The portable ZIP runs without installation and stores configuration/data in the application data directories.
+          EOF
+          gh release create "$RELEASE_VERSION" release-assets/* --repo "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" --title "$RELEASE_VERSION" --notes-file release-notes.md

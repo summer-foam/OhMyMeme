@@ -2,6 +2,12 @@
 
 面向开发者的环境搭建、代码规范、测试与构建说明。用户文档见 [README.md](README.md)，AI 编码助手的完整项目上下文见 [AGENTS.md](AGENTS.md)。
 
+本 fork 的有效工作流在仓库根 `.github/workflows`，命令工作目录为 `app`；`app/.github` 保留上游历史。Windows 构建必须有 MSVC/CMake、PyInstaller、Inno Setup 和项目裁剪 ffmpeg，生成安装器与 portable ZIP，缺组件直接失败。发布工作流默认 `publish=false`，正式发布需明确版本；本机未签名包不得描述为已签名发行版。
+
+新增验证：`tests/test_qq_favorites_download.py`（安全下载、真实临时库去重、取消与 429）、`tests/test_napcat_installer.py`（摘要、恶意 ZIP、取消及原子安装）、`tests/test_cloud_backends.py`（boto3 Stubber，不访问云端）、`tests/test_cloud_connection_change.py`（云缓存切换）、`tests/test_window_dpi.py`（原生跨屏尺寸挂钩）。根目录 `tests/test_qq_diagnostics.py` 配套 `app/scripts/qq_diagnostics.py`，只读诊断使用显式环境变量，不读取真实应用配置或输出敏感标识。
+
+主界面浏览器流程使用 `tests/fixtures/qq_browser_bridge.js` 模拟桥接，运行三个 `*_browser_check.py`/工作台脚本需本机静态服务器。云端真实联调和真实收藏写入验证不得与模拟成功混同；混合 DPI 程序移动已检查主/设置窗口，仍需手工拖动视觉确认。
+
 ## 开发环境
 
 **要求**: Python 3.10+（推荐 3.12）、Node.js（构建 Vue 前端）；Linux 额外需要 GTK/WebKit 依赖（见下）。

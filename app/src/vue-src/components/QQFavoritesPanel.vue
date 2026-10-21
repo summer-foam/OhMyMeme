@@ -33,7 +33,7 @@ interface Progress {
 }
 
 const props = withDefaults(defineProps<{ open: boolean; selectedIds?: number[] }>(), {selectedIds: () => []})
-const emit = defineEmits<{ close: [] }>()
+const emit = defineEmits<{ close: []; imported: [] }>()
 const panel = ref<HTMLElement>()
 const confirmation = ref<HTMLElement>()
 const tokenInput = ref<HTMLInputElement>()
@@ -44,6 +44,10 @@ const settingsPanel = ref<HTMLElement>()
 const previewPanel = ref<HTMLElement>()
 const uploadPanel = ref<HTMLElement>()
 const uploadButton = ref<HTMLButtonElement>()
+const downloadPanel = ref<HTMLElement>()
+const downloadButton = ref<HTMLButtonElement>()
+const pendingDownload = ref<{ ids: string[] | null; count: number; account: string } | null>(null)
+let lastImportedTask = ''
 const page = ref(1)
 const pageSize = 60
 const preview = ref<Favorite | null>(null)
@@ -89,6 +93,7 @@ const running = computed(() => progress.value.running === true || progress.value
 const busy = computed(() => checking.value || saving.value || loading.value || starting.value || running.value || runtimeBusy.value)
 const validScope = computed(() => connected.value && !!account.value && (!expectedAccount.value.trim() || account.value === expectedAccount.value.trim()))
 const canDelete = computed(() => validScope.value && loaded.value && !listError.value && listAccount.value === account.value && selection.value.length > 0 && !busy.value)
+const canDownload = computed(() => validScope.value && loaded.value && !listError.value && listAccount.value === account.value && favorites.value.length > 0 && !busy.value)
 const filtered = computed(() => {
   const query = search.value.trim().toLocaleLowerCase()
   return favorites.value.filter(item => !query || [item.desc, item.md5, item.resId].some(value => String(value || '').toLocaleLowerCase().includes(query)))
@@ -97,14 +102,15 @@ const pageCount = computed(() => Math.max(1, Math.ceil(filtered.value.length / p
 const pageItems = computed(() => filtered.value.slice((page.value - 1) * pageSize, page.value * pageSize))
 const outsideSelection = computed(() => selection.value.filter(id => !pageItems.value.some(item => item.resId === id)).length)
 const allSelected = computed(() => pageItems.value.length > 0 && pageItems.value.every(item => selection.value.includes(item.resId)))
-const overlayOpen = computed(() => !!pendingDelete.value || !!pendingUpload.value || !!preview.value || settingsOpen.value)
+const overlayOpen = computed(() => !!pendingDelete.value || !!pendingUpload.value || !!pendingDownload.value || !!preview.value || settingsOpen.value)
 const taskItems = computed(() => Array.isArray(progress.value.items) ? progress.value.items : [])
-const terminalStates = ['done', 'success', 'completed', 'verified', 'duplicate', 'failed', 'error', 'submitted_unconfirmed', 'blocked', 'cancelled', 'canceled', 'skipped']
+const terminalStates = ['done', 'success', 'completed', 'verified', 'duplicate', 'imported', 'already_exists', 'failed', 'error', 'submitted_unconfirmed', 'blocked', 'cancelled', 'canceled', 'skipped']
 const completed = computed(() => typeof progress.value.done === 'number' ? Math.max(0, progress.value.done) : taskItems.value.filter(item => terminalStates.includes(String(item.state || item.status))).length)
 const total = computed(() => typeof progress.value.total === 'number' ? Math.max(0, progress.value.total) : taskItems.value.length)
 const failed = computed(() => taskItems.value.filter(item => ['failed', 'error', 'blocked'].includes(String(item.state || item.status))).length)
 const verified = computed(() => taskItems.value.filter(item => String(item.state || item.status) === 'verified').length)
-const duplicates = computed(() => taskItems.value.filter(item => String(item.state || item.status) === 'duplicate').length)
+const duplicates = computed(() => taskItems.value.filter(item => ['duplicate', 'already_exists'].includes(String(item.state || item.status))).length)
+const imported = computed(() => taskItems.value.filter(item => String(item.state || item.status) === 'imported').length)
 const blocked = computed(() => taskItems.value.filter(item => String(item.state || item.status) === 'blocked').length)
 const unconfirmed = computed(() => taskItems.value.filter(item => String(item.state || item.status) === 'submitted_unconfirmed').length)
 const taskTitle = computed(() => taskUncertain.value ? '任务状态待确认' : running.value ? '正在处理收藏' : ['cancelled', 'canceled'].includes(String(progress.value.status)) ? '任务已取消' : failed.value ? '任务结束，有失败项' : unconfirmed.value ? '任务结束，部分结果待核对' : progress.value.error ? '任务结束，需要检查' : '任务已结束')
@@ -118,6 +124,10 @@ function itemState(item: TaskItem) {
     running: '处理中',
     uploading: '上传中',
     deleting: '删除中',
+    downloading: '下载中',
+    importing: '导入中',
+    imported: '已导入本地',
+    already_exists: '本地已存在',
     verified: '已核验',
     duplicate: '已存在',
     submitted_unconfirmed: '已提交，待核对',
@@ -165,6 +175,20 @@ function readableError(value: unknown) {
     resource_not_in_current_list: '该收藏已不在当前列表，请刷新后重新选择。',
     previous_submission_unconfirmed: '上次提交尚未核验，请先在 QQ 中核对结果。',
     unsupported_image: '此图片格式暂不支持上传。',
+    snapshot_required: '请先刷新 QQ 收藏列表，再下载已读取的收藏。',
+    resource_not_in_snapshot: '所选收藏不在已读取的快照中，请刷新列表。',
+    unsafe_download_url: '图片地址不在支持的 QQ 图片服务范围内。',
+    unsafe_download_address: '图片服务地址无法安全验证，请稍后重试。',
+    md5_mismatch: '下载图片与收藏记录的哈希不一致，已停止导入。',
+    download_too_large: '图片超过下载大小限制，已跳过。',
+    download_timeout: '下载超时，可以重新选择失败项下载。',
+    download_failed: '图片下载失败，请检查网络后重试。',
+    download_http_error: 'QQ 图片服务暂时无法提供该图片。',
+    download_incomplete: '图片下载不完整，未导入本地库。',
+    invalid_image: '下载内容不是有效图片，未导入本地库。',
+    import_limit_exceeded: '图片超过本地导入限制，请检查设置。',
+    import_failed: '下载完成但本地导入失败，请检查存储空间。',
+    http_429: '服务请求过于频繁，请稍后再试。',
     http_403: '服务拒绝访问，请检查访问 token。'
   } as Record<string, string>)[text] || text
 }
@@ -363,6 +387,11 @@ async function confirmUpload() {
 // 关闭最上层，恢复对应入口焦点。
 function dismissOverlay() {
   if (starting.value) return
+  if (pendingDownload.value) {
+    pendingDownload.value = null;
+    nextTick(() => downloadButton.value?.focus());
+    return
+  }
   if (preview.value) {
     preview.value = null;
     nextTick(() => overlayFocus?.isConnected && overlayFocus.focus());
@@ -398,18 +427,29 @@ function dismissConfirmation() {
   nextTick(() => deleteButton.value?.focus())
 }
 
-// 提交上传或已确认的删除，随后以服务端进度作为任务真源。
-async function startTask(kind: 'upload' | 'delete') {
+// 下载前固定账号、快照范围与数量，搜索不会改变整批下载范围。
+async function confirmDownload(selected: boolean) {
+  if (!canDownload.value || (selected && !selection.value.length)) return
+  pendingDownload.value = {ids: selected ? [...selection.value] : null, count: selected ? selection.value.length : favorites.value.length, account: account.value}
+  taskError.value = ''
+  await nextTick()
+  downloadPanel.value?.querySelector<HTMLButtonElement>('button')?.focus()
+}
+
+// 提交已确认任务，随后以服务端进度作为任务真源。
+async function startTask(kind: 'upload' | 'delete' | 'download') {
   if (busy.value || !validScope.value) return
   const deletion = pendingDelete.value
   const upload = pendingUpload.value
+  const download = pendingDownload.value
   if (kind === 'delete' && (!deletion || deletion.account !== account.value || listAccount.value !== account.value)) return
   if (kind === 'upload' && (!upload || upload.account !== account.value || !upload.ids.length)) return
+  if (kind === 'download' && (!download || download.account !== account.value || listAccount.value !== account.value || !loaded.value || !!listError.value)) return
   starting.value = true;
   taskError.value = '';
   notice.value = ''
   const current = generation
-  const result = kind === 'upload' ? await api('qq_favorites_upload_selected', upload!.ids) : await api('qq_favorites_delete', deletion!.ids)
+  const result = kind === 'upload' ? await api('qq_favorites_upload_selected', upload!.ids) : kind === 'download' ? await api('qq_favorites_download', download!.ids) : await api('qq_favorites_delete', deletion!.ids)
   if (current !== generation) return
   starting.value = false
   if (!result?.ok) {
@@ -418,13 +458,15 @@ async function startTask(kind: 'upload' | 'delete') {
   }
   pendingDelete.value = null;
   pendingUpload.value = null;
+  pendingDownload.value = null;
   hasTask.value = true
-  nextTick(() => (kind === 'upload' ? uploadButton.value : deleteButton.value)?.focus())
+  nextTick(() => (kind === 'upload' ? uploadButton.value : kind === 'download' ? downloadButton.value : deleteButton.value)?.focus())
   progress.value = {
     running: true,
     task_id: result.task_id,
+    kind,
     items: [],
-    total: kind === 'upload' ? upload!.ids.length : deletion!.ids.length,
+    total: kind === 'upload' ? upload!.ids.length : kind === 'download' ? download!.count : deletion!.ids.length,
     done: 0
   }
   await pollProgress(current)
@@ -448,6 +490,10 @@ async function pollProgress(current = generation) {
   if (result.running || result.active) timer = setTimeout(() => pollProgress(current), 650)
   else {
     cancelling.value = false
+    if (result.kind === 'download' && imported.value > 0 && result.task_id && lastImportedTask !== result.task_id) {
+      lastImportedTask = result.task_id
+      emit('imported')
+    }
     if (wasRunning || connectionCheckDeferred) {
       selection.value = []
       await checkConnection()
@@ -495,7 +541,7 @@ function onKeydown(event: KeyboardEvent) {
   if (event.key !== 'Tab') return
   if (!overlayOpen.value) return
   event.stopImmediatePropagation()
-  const root = preview.value ? previewPanel.value : pendingUpload.value ? uploadPanel.value : pendingDelete.value ? confirmation.value : settingsOpen.value ? settingsPanel.value : panel.value
+  const root = preview.value ? previewPanel.value : pendingDownload.value ? downloadPanel.value : pendingUpload.value ? uploadPanel.value : pendingDelete.value ? confirmation.value : settingsOpen.value ? settingsPanel.value : panel.value
   const controls = root ? [...root.querySelectorAll<HTMLElement>('button:not(:disabled), input:not(:disabled), select:not(:disabled), summary, [tabindex="0"]')].filter(el => el.getClientRects().length > 0) : []
   const first = controls[0];
   const last = controls[controls.length - 1]
@@ -523,6 +569,7 @@ watch(() => props.open, async open => {
   starting.value = false;
   cancelling.value = false
   pendingDelete.value = null
+  pendingDownload.value = null
   pendingUpload.value = null;
   preview.value = null;
   settingsOpen.value = false
@@ -575,7 +622,7 @@ onBeforeUnmount(() => {
         <main class="qq-library" :inert="overlayOpen ? true : undefined">
           <div class="qq-library-heading">
             <div><h2>QQ 收藏</h2>
-              <p>{{ loaded ? `已加载 ${favorites.length} 张 · 列表完整性未知` : '从本机 QQ 服务加载收藏列表' }}</p>
+              <p>{{ loaded ? `已读取 ${favorites.length} 张 · 列表完整性未验证` : '从本机 QQ 服务加载收藏列表' }}</p>
             </div>
             <button :disabled="busy || !validScope" @click="loadFavorites">
               {{ loading ? '加载中…' : loaded ? '刷新收藏' : '加载收藏' }}
@@ -594,6 +641,7 @@ onBeforeUnmount(() => {
             }} 张<span v-if="outsideSelection">（当前页外 {{ outsideSelection }} 张）</span></span>
             <div>
               <button v-if="selection.length" :disabled="busy" @click="selection = []">清除选择</button>
+              <button :disabled="!canDownload || !selection.length" @click="confirmDownload(true)">下载所选</button>
               <button ref="deleteButton" class="qq-danger" :disabled="!canDelete" @click="confirmDelete">删除所选
               </button>
             </div>
@@ -650,6 +698,11 @@ onBeforeUnmount(() => {
           <footer class="qq-library-footer">删除作用于全部跨页已选收藏，请先核对 QQ 账号。点击图片可放大预览。</footer>
         </main>
         <aside class="qq-sidebar" :inert="overlayOpen ? true : undefined">
+          <section class="qq-upload"><h2>下载导入本地</h2>
+            <p>当前已读取 <strong>{{ favorites.length }}</strong> 张收藏</p>
+            <button ref="downloadButton" :disabled="!canDownload" @click="confirmDownload(false)">下载当前已读取收藏</button>
+            <p class="qq-help">包含已读取快照的所有页，不受搜索筛选影响。列表完整性未验证，请在 QQ 中核对；已有图片会去重。</p>
+          </section>
           <section class="qq-upload"><h2>上传本地所选</h2>
             <p>本地已选 <strong>{{ localIds.length }}</strong> 张表情</p>
             <button ref="uploadButton" class="qq-primary" :disabled="busy || !validScope || !localIds.length"
@@ -669,7 +722,11 @@ onBeforeUnmount(() => {
             <template v-if="hasTask">
               <div class="qq-progress-meta"><span>已处理 {{ completed }} / {{ total || '待确认' }} 张</span></div>
               <dl class="qq-task-counts">
-                <div>
+                <div v-if="progress.kind === 'download'">
+                  <dt>已导入</dt>
+                  <dd>{{ imported }}</dd>
+                </div>
+                <div v-else>
                   <dt>已核验</dt>
                   <dd>{{ verified }}</dd>
                 </div>
@@ -700,7 +757,7 @@ onBeforeUnmount(() => {
               <p v-if="!running" class="qq-help">
                 已完成的操作不会因取消而撤回。重试前先刷新收藏核对；上传请在本地重新选择失败项，删除需重新选择并确认。</p>
             </template>
-            <p v-else class="qq-help">还没有收藏任务。上传、删除的处理结果会显示在这里。</p>
+            <p v-else class="qq-help">还没有收藏任务。下载导入、上传、删除的处理结果会显示在这里。</p>
             <div v-if="taskError || progress.error" class="qq-notice" role="alert"><p>
               {{ taskError || readableError(progress.error) }}</p>
               <button :disabled="starting || checking || saving" @click="pollProgress()">重新检查任务</button>
@@ -771,6 +828,15 @@ onBeforeUnmount(() => {
               {{ starting ? '正在提交…' : `确认上传 ${pendingUpload.ids.length} 张` }}
             </button>
           </div>
+        </section>
+      </div>
+      <div v-if="pendingDownload" class="qq-confirm-overlay" @click.self="dismissOverlay">
+        <section ref="downloadPanel" class="qq-confirm" role="dialog" aria-modal="true" aria-labelledby="qq-download-title" tabindex="-1">
+          <h2 id="qq-download-title">下载导入 {{ pendingDownload.count }} 张收藏</h2>
+          <p>来源账号：<strong>{{ pendingDownload.account }}</strong>。将{{ pendingDownload.ids ? '所选' : '当前已读取的全部' }} {{ pendingDownload.count }} 张收藏下载到本地表情库，已有图片会去重。</p>
+          <p class="qq-help">列表完整性未验证，本次下载范围仅包含当前已读取的收藏，请在 QQ 中核对数量。</p>
+          <p v-if="taskError" class="qq-notice" role="alert">{{ taskError }}</p>
+          <div class="qq-confirm-actions"><button :disabled="starting" @click="dismissOverlay">取消</button><button :disabled="busy" @click="startTask('download')">{{ starting ? '正在提交…' : `确认下载 ${pendingDownload.count} 张` }}</button></div>
         </section>
       </div>
       <div v-if="pendingDelete" class="qq-confirm-overlay" @click.self="!starting && dismissConfirmation()">
@@ -985,6 +1051,7 @@ onBeforeUnmount(() => {
 
 .qq-selection > div {
   display: flex;
+  flex-wrap: wrap;
   gap: 8px;
 }
 

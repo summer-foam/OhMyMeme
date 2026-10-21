@@ -64,8 +64,8 @@ _MSGS = {
         "en": "Skipping installer (non-Windows target)",
     },
     "iscc_not_found": {
-        "zh": "警告: 未找到 ISCC.exe（InnoSetup），跳过安装包制作",
-        "en": "WARNING: ISCC.exe (InnoSetup) not found, skipping installer",
+        "zh": "错误: 未找到 ISCC.exe（InnoSetup），无法制作安装包",
+        "en": "ERROR: ISCC.exe (InnoSetup) not found, cannot create installer",
     },
     "outdir_not_found": {
         "zh": "错误: 未找到输出目录:",
@@ -661,8 +661,12 @@ def verify_ffmpeg_bundle():
 
 
 def find_iscc():
+    # 支持显式文件、安装目录和 PATH 中的 Inno Setup。
+    override = os.environ.get("ISCC_DIR", "")
     paths = [
-        os.environ.get("ISCC_DIR", ""),
+        str(Path(override) / "ISCC.exe") if override else "",
+        override,
+        shutil.which("ISCC.exe"),
         r"C:\Program Files\Inno Setup 7\ISCC.exe",
         r"C:\Program Files (x86)\Inno Setup 6\ISCC.exe",
         r"C:\Program Files\Inno Setup 6\ISCC.exe",
@@ -673,6 +677,22 @@ def find_iscc():
         if p and os.path.isfile(p):
             return p
     return None
+
+
+def build_windows_portable(version):
+    # 便携程序只打包构建目录，保留顶层目录并附带许可证。
+    root = BUILD_DIR / APP_NAME
+    if not (root / (APP_NAME + ".exe")).is_file():
+        raise RuntimeError("Windows executable missing: %s" % root)
+    shutil.copy2(PROJECT_ROOT / "LICENSE", root / "LICENSE.txt")
+    archive = shutil.make_archive(
+        str(BUILD_DIR / (APP_NAME + "-" + version + "-windows-x64-portable")),
+        "zip",
+        root_dir=BUILD_DIR,
+        base_dir=APP_NAME,
+    )
+    print(L("build_done"), archive)
+    return Path(archive)
 
 
 def check_pyinstaller():
@@ -741,6 +761,10 @@ def build_pyinstaller(target=None, ffmpeg=None):
         str(BUILD_DIR),
         "--specpath",
         str(PROJECT_ROOT / "build"),
+        "--workpath",
+        str(PROJECT_ROOT / "build"),
+        "--paths",
+        str(PROJECT_ROOT),
         "--noconfirm",
         "--clean",
         "--add-data",
@@ -865,7 +889,7 @@ def build_installer(version, target=None, filename_version=None):
     iscc = find_iscc()
     if not iscc:
         print(L("iscc_not_found"))
-        return
+        sys.exit(1)
 
     _ensure_lang_file(iscc)
 
@@ -873,12 +897,12 @@ def build_installer(version, target=None, filename_version=None):
     if not dist_dir.is_dir():
         print(L("outdir_not_found"), dist_dir)
         print(L("run_build_first"))
-        return
+        sys.exit(1)
 
     iss_template = PROJECT_ROOT / "scripts" / "installer" / "windows.iss"
     if not iss_template.exists():
         print(L("iss_not_found"), iss_template)
-        return
+        sys.exit(1)
 
     filename_version = filename_version or version
     # InnoSetup 要求 AppVersion 为纯数字版本；nightly 时文件名可含 -nightly 后缀
@@ -895,7 +919,7 @@ def build_installer(version, target=None, filename_version=None):
     )
     source_dir_abs = str(dist_dir.resolve())
     iss_content = iss_content.replace(
-        '#define SourceDir "..\\..\\dist\\src.dist"',
+        '#define SourceDir "..\\..\\dist\\OhMyMeme"',
         '#define SourceDir "%s"' % source_dir_abs,
     )
     iss_content = iss_content.replace(
@@ -923,6 +947,7 @@ def build_installer(version, target=None, filename_version=None):
         print(L("installer_done"), installer)
     else:
         print(L("installer_not_found"), installer)
+        sys.exit(1)
 
 
 def find_makeappx():
@@ -1142,7 +1167,7 @@ def build_msi(version, target=None, filename_version=None):
 def build_windows_installers(
     app_version, filename_version, want_msi=False, want_msix=False
 ):
-    """构建 Windows 安装包集合：InnoSetup .exe 始终构建（工具缺失仅告警），
+    """构建 Windows 安装包集合：InnoSetup .exe 必须成功（工具缺失即失败），
     可选追加 MSI（--msi）与 MSIX（--msix）"""
     build_installer(app_version, target="Windows", filename_version=filename_version)
     if want_msi:
@@ -1382,6 +1407,12 @@ if __name__ == "__main__":
     )
     parser.set_defaults(target_windows=False, target_linux=False, target_macos=False)
     args = parser.parse_args()
+    if args.version and not re.fullmatch(
+        r"[0-9]+\.[0-9]+\.[0-9]+(?:-[A-Za-z0-9.-]+)?", args.version
+    ):
+        parser.error("--version must be X.Y.Z or X.Y.Z-suffix")
+    if args.build_only and args.installer_only:
+        parser.error("--build-only and --installer-only cannot be combined")
 
     # --- language detection ---
     if args.lang:
@@ -1464,6 +1495,12 @@ if __name__ == "__main__":
                     keyfinder_original = pin_keyfinder_hash(keyfinder)
                 ffmpeg = ensure_ffmpeg(allow_missing=args.allow_missing_ffmpeg)
             version = build_pyinstaller(target=target, ffmpeg=ffmpeg)
+            if target == "Windows":
+                if keyfinder and not verify_keyfinder_bundle():
+                    sys.exit(1)
+                if ffmpeg and not verify_ffmpeg_bundle():
+                    sys.exit(1)
+                build_windows_portable(build_version)
             if args.build_only:
                 pass
             elif target == "Windows":

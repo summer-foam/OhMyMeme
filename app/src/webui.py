@@ -310,6 +310,7 @@ def _migrate_thumbnails(thumb_dir) -> int:
 
 # 云端直接使用：内存清单状态（刷新线程与查询线程共享；missing 按本地集合懒重算）
 _cloud_lock = threading.Lock()
+_cloud_generation = 0
 _cloud_state = {
     "manifest": None,
     "missing": [],
@@ -326,16 +327,19 @@ def _cloud_ensure_loaded():
     with _cloud_lock:
         if _cloud_state["loaded"]:
             return
+        generation = _cloud_generation
     data = sync_module.load_cloud_manifest()
     with _cloud_lock:
-        if not _cloud_state["loaded"]:
+        if generation == _cloud_generation and not _cloud_state["loaded"]:
             _cloud_state["manifest"] = data if isinstance(data, dict) else None
             _cloud_state["loaded"] = True
 
 
 def _cloud_reset():
     # 清空云态并删除本地清单缓存（开关切换/云后端变更时调用）
+    global _cloud_generation
     with _cloud_lock:
+        _cloud_generation += 1
         _cloud_state.update(
             manifest=None,
             missing=[],
@@ -343,13 +347,13 @@ def _cloud_reset():
             loaded=False,
             refreshing=False,
         )
-    try:
-        path = get_config().data_dir / sync_module.CLOUD_INDEX_FILENAME
-        if path.exists():
-            path.unlink()
-    except OSError:
-        pass
-    _sync_status_reset()
+        try:
+            path = get_config().data_dir / sync_module.CLOUD_INDEX_FILENAME
+            if path.exists():
+                path.unlink()
+        except OSError:
+            pass
+        _sync_status_reset()
 
 
 # 顶栏同步状态：内存缓存远端清单 + 后台刷新，供主窗口低开销轮询
@@ -563,7 +567,10 @@ def _start_cloud_refresh(fetched=None) -> bool:
         if _cloud_state["refreshing"]:
             return False
         _cloud_state["refreshing"] = True
-    threading.Thread(target=_cloud_refresh_worker, args=(fetched,), daemon=True).start()
+        generation = _cloud_generation
+    threading.Thread(
+        target=_cloud_refresh_worker, args=(fetched, generation), daemon=True
+    ).start()
     return True
 
 
@@ -593,32 +600,42 @@ def _start_thumb_autopush(worker) -> bool:
     return True
 
 
-def _cloud_refresh_worker(fetched=None):
+def _cloud_refresh_worker(fetched=None, generation=None):
     # 后台拉云端清单 → 写缓存 → 差集 → 预取缩略图 → 通知前端
+    if generation is None:
+        with _cloud_lock:
+            generation = _cloud_generation
     try:
         data = fetched
         if data is None:
             data = sync_module.download_index()
         if isinstance(data, dict):
-            sync_module.save_cloud_manifest(data)
             local = frozenset(get_db().get_all_filenames())
             missing = sync_module.cloud_missing(data, local)
             with _cloud_lock:
+                if generation != _cloud_generation:
+                    return
+                sync_module.save_cloud_manifest(data)
                 _cloud_state.update(
                     manifest=data,
                     missing=missing,
                     local=local,
                     loaded=True,
                 )
-            _sync_status_set_manifest(data)
+                _sync_status_set_manifest(data)
             cfg = get_config()
-            if cfg.get("cloud_direct", False):
+            with _cloud_lock:
+                current = generation == _cloud_generation
+            if current and cfg.get("cloud_direct", False):
                 try:
                     ready = sync_module.prefetch_thumbs(missing, cfg.thumbnail_dir)
                     logger.info(f"cloud prefetch: {ready}/{len(missing)}")
                 except Exception as e:
                     logger.warning(f"cloud prefetch failed: {e}")
-            _notify_cloud_ready()
+            with _cloud_lock:
+                current = generation == _cloud_generation
+            if current:
+                _notify_cloud_ready()
         else:
             # 拉取失败：保留既有缓存，下次启动或保存设置时重试
             logger.info("cloud refresh: no manifest fetched")
@@ -626,7 +643,8 @@ def _cloud_refresh_worker(fetched=None):
         logger.warning(f"cloud refresh failed: {e}")
     finally:
         with _cloud_lock:
-            _cloud_state["refreshing"] = False
+            if generation == _cloud_generation:
+                _cloud_state["refreshing"] = False
 
 
 def _notify_cloud_ready():
@@ -804,6 +822,41 @@ def _window_drag_update(win_x, win_y, origin, last_move, dx, dy):
     return origin, now, (origin[0] + dx, origin[1] + dy)
 
 
+_CLOUD_CONNECTION_KEYS = (
+    "sync_type",
+    "s3_endpoint",
+    "s3_region",
+    "s3_bucket",
+    "s3_access_key",
+    "s3_secret_key",
+    "s3_path",
+    "s3_addressing_style",
+    "s3_signature_version",
+    "r2_account_id",
+    "r2_access_key_id",
+    "r2_secret_access_key",
+    "r2_bucket",
+    "r2_path",
+    "webdav_url",
+    "webdav_user",
+    "webdav_password",
+    "webdav_path",
+    "ftp_host",
+    "ftp_port",
+    "ftp_user",
+    "ftp_password",
+    "ftp_path",
+)
+
+
+# 连接变化时丢弃旧库清单，防止另一存储桶的条目残留。
+def _cloud_settings_changed(cfg, settings):
+    return any(
+        key in settings and settings[key] != cfg.get(key, "")
+        for key in _CLOUD_CONNECTION_KEYS
+    )
+
+
 class JsApi:
     """暴露给前端的 JS API"""
 
@@ -817,6 +870,7 @@ class JsApi:
         self._qq_connection_lock = threading.RLock()
         self._qq_token = ""
         self._napcat_manager = None
+        self._napcat_installer = None
         self._qq_managed_endpoint = ""
         self._qq_shutting_down = False
 
@@ -843,6 +897,37 @@ class JsApi:
         if not result:
             return {"ok": False, "cancelled": True}
         return {"ok": True, "directory": str(result[0])}
+
+    # 原始发布包安装与运行生命周期分离，完成下载不会启动 QQ。
+    def _napcat_package_installer(self):
+        from .napcat_installer import NapCatInstaller
+
+        if getattr(self, "_napcat_installer", None) is None:
+            self._napcat_installer = NapCatInstaller(
+                self._cfg.data_dir / "napcat-packages"
+            )
+        return self._napcat_installer
+
+    # 下载固定兼容版本，拒绝在退出、运行或收藏任务期间更换环境。
+    def napcat_install_start(self, mode="shell", version="v4.18.38"):
+        with self._qq_connection_lock:
+            if getattr(self, "_qq_shutting_down", False):
+                return {"ok": False, "error": "应用正在退出"}
+            if self._qq_favorites.progress().get("running"):
+                return {"ok": False, "error": "请等待收藏任务完成"}
+            if self._napcat_runtime().status().get("running"):
+                return {"ok": False, "error": "请先停止本工具启动的适配器"}
+            return self._napcat_package_installer().start(mode, version)
+
+    # 安装进度仅返回包状态，不包含运行会话凭据。
+    def napcat_install_progress(self):
+        with self._qq_connection_lock:
+            return self._napcat_package_installer().progress()
+
+    # 取消安装不影响 QQ 会话。
+    def napcat_install_cancel(self):
+        with self._qq_connection_lock:
+            return self._napcat_package_installer().cancel()
 
     # 仅检查文件和路径，不执行选择目录中的脚本。
     def napcat_runtime_inspect(self, directory, qq_path="", mode="shell"):
@@ -919,6 +1004,9 @@ class JsApi:
 
         with self._qq_connection_lock:
             self._qq_shutting_down = True
+            installer = getattr(self, "_napcat_installer", None)
+            if installer is not None:
+                installer.cancel()
             service = self._qq_favorites
             if self._napcat_manager is None and not service.progress().get("running"):
                 return
@@ -1108,6 +1196,22 @@ class JsApi:
                 return result
             files = result["files"]
             return self._qq_favorites.start_upload(endpoint, token, account, files)
+
+    # 下载当前已读取快照的全部或所选资源，不推断远端清单完整性。
+    def qq_favorites_download(self, res_ids=None):
+        with self._qq_connection_lock:
+            if getattr(self, "_qq_shutting_down", False):
+                return {"ok": False, "error": "应用正在退出"}
+            endpoint, token, account = self._qq_connection()
+            if not account:
+                return {"ok": False, "error": "请先设置预期 QQ 号"}
+            return self._qq_favorites.start_download(
+                endpoint, token, account, res_ids, self._qq_import_download
+            )
+
+    # QQ 图片沿用批量图片导入，保留去重、限制、隐写解码和清单更新。
+    def _qq_import_download(self, path, name):
+        return self._webui._do_import([path], [name])
 
     # 删除请求由服务端重新校验当前账号及资源归属。
     def qq_favorites_delete(self, res_ids):
@@ -2415,6 +2519,8 @@ class JsApi:
             "s3_access_key": d.get("s3_access_key", ""),
             "s3_secret_key": d.get("s3_secret_key", ""),
             "s3_path": d.get("s3_path", ""),
+            "s3_signature_version": d.get("s3_signature_version", "s3v4"),
+            "s3_addressing_style": d.get("s3_addressing_style", "virtual"),
             "r2_account_id": d.get("r2_account_id", ""),
             "r2_access_key_id": d.get("r2_access_key_id", ""),
             "r2_secret_access_key": d.get("r2_secret_access_key", ""),
@@ -2444,15 +2550,11 @@ class JsApi:
 
                 set_auto_start(settings["auto_start"])
             prev_cloud = bool(self._cfg.get("cloud_direct", False))
-            prev_sync_type = self._cfg.get("sync_type", "")
+            sync_changed = _cloud_settings_changed(self._cfg, settings)
             self._cfg.update_from_dict(settings)
             self._cfg.save()
-            if "cloud_direct" in settings or "sync_type" in settings:
+            if "cloud_direct" in settings or sync_changed:
                 cloud = bool(self._cfg.get("cloud_direct", False))
-                sync_changed = (
-                    "sync_type" in settings
-                    and settings.get("sync_type", "") != prev_sync_type
-                )
                 if cloud != prev_cloud or sync_changed:
                     _cloud_reset()
                     if cloud:
@@ -2497,6 +2599,8 @@ class JsApi:
             "s3_access_key": "",
             "s3_secret_key": "",
             "s3_path": "",
+            "s3_signature_version": "s3v4",
+            "s3_addressing_style": "virtual",
             "r2_account_id": "",
             "r2_access_key_id": "",
             "r2_secret_access_key": "",
@@ -3163,6 +3267,8 @@ class SettingsApi:
             "s3_access_key": d.get("s3_access_key", ""),
             "s3_secret_key": d.get("s3_secret_key", ""),
             "s3_path": d.get("s3_path", ""),
+            "s3_signature_version": d.get("s3_signature_version", "s3v4"),
+            "s3_addressing_style": d.get("s3_addressing_style", "virtual"),
             "r2_account_id": d.get("r2_account_id", ""),
             "r2_access_key_id": d.get("r2_access_key_id", ""),
             "r2_secret_access_key": d.get("r2_secret_access_key", ""),
@@ -3266,16 +3372,12 @@ class SettingsApi:
 
                 set_auto_start(settings["auto_start"])
             prev_cloud = bool(self._cfg.get("cloud_direct", False))
-            prev_sync_type = self._cfg.get("sync_type", "")
+            sync_changed = _cloud_settings_changed(self._cfg, settings)
             self._cfg.update_from_dict(settings)
             self._cfg.save()
             # 云端直接使用开关/云后端变更：重置云态与缓存，开启时立即重拉
-            if "cloud_direct" in settings or "sync_type" in settings:
+            if "cloud_direct" in settings or sync_changed:
                 cloud = bool(self._cfg.get("cloud_direct", False))
-                sync_changed = (
-                    "sync_type" in settings
-                    and settings.get("sync_type", "") != prev_sync_type
-                )
                 if cloud != prev_cloud or sync_changed:
                     _cloud_reset()
                     if cloud:
@@ -3339,6 +3441,8 @@ class SettingsApi:
             "s3_access_key": "",
             "s3_secret_key": "",
             "s3_path": "",
+            "s3_signature_version": "s3v4",
+            "s3_addressing_style": "virtual",
             "r2_account_id": "",
             "r2_access_key_id": "",
             "r2_secret_access_key": "",
@@ -5616,6 +5720,10 @@ class WebUI:
         )
         self._visible = not self._silent_start
 
+        from .window_dpi import watch_window_dpi
+
+        watch_window_dpi(self._window)
+
         self._started = True
         # 注册 LAN 设备确认回调（窗口创建完成后）
         self._init_lan()
@@ -5667,6 +5775,9 @@ class WebUI:
                     "#f8fafc" if self._cfg.get("theme") == "light" else "#0d0d0f"
                 ),
             )
+            from .window_dpi import watch_window_dpi
+
+            watch_window_dpi(self._settings_window)
             return True
         except Exception as e:
             logger.warning(f"create settings window error: {e}")

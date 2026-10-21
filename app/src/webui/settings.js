@@ -463,7 +463,7 @@ async function getSettings() {
   const s3Addr = document.getElementById('s3-addressing-style');
   if (s3Addr) s3Addr.value = s.s3_addressing_style || 'virtual';
   const s3Sig = document.getElementById('s3-signature-version');
-  if (s3Sig) s3Sig.value = s.s3_signature_version || 's3';
+  if (s3Sig) s3Sig.value = s.s3_signature_version || 's3v4';
   document.getElementById('s3-region').value = s.s3_region || '';
   document.getElementById('s3-bucket').value = s.s3_bucket || '';
   document.getElementById('s3-access-key').value = s.s3_access_key || '';
@@ -708,7 +708,7 @@ function collectSyncSettings() {
     s3_secret_key: document.getElementById('s3-secret-key')?.value || '',
     s3_path: document.getElementById('s3-path')?.value || '',
     s3_addressing_style: document.getElementById('s3-addressing-style')?.value || 'virtual',
-    s3_signature_version: document.getElementById('s3-signature-version')?.value || 's3',
+    s3_signature_version: document.getElementById('s3-signature-version')?.value || 's3v4',
     r2_account_id: document.getElementById('r2-account-id')?.value || '',
     r2_access_key_id: document.getElementById('r2-access-key-id')?.value || '',
     r2_secret_access_key: document.getElementById('r2-secret-access-key')?.value || '',
@@ -832,7 +832,7 @@ async function saveSettings() {
         '上传缩略图',
         '云端直接使用需要云端存有缩略图才能正常显示缺失表情。是否立即上传一次（同步本地表情与缩略图）？'
       );
-      if (up) await syncPush();
+       if (up) setTimeout(() => syncPush(), 0);
     }
     _lastCloudDirect = cloudNow;
   });
@@ -943,6 +943,8 @@ async function resetSettingsNow() {
     document.getElementById('s3-access-key').value = '';
     document.getElementById('s3-secret-key').value = '';
     document.getElementById('s3-path').value = '';
+    document.getElementById('s3-signature-version').value = s.s3_signature_version || 's3v4';
+    document.getElementById('s3-addressing-style').value = s.s3_addressing_style || 'virtual';
     document.getElementById('r2-account-id').value = '';
     document.getElementById('r2-access-key-id').value = '';
     document.getElementById('r2-secret-access-key').value = '';
@@ -987,15 +989,42 @@ async function resetSettingsNow() {
 }
 
 async function testSync() {
+  if (_syncActionBusy) return;
   const sync = collectSyncSettings();
   if (!validateSync(sync)) return;
   const btn = document.getElementById('btn-ftp-test');
   const status = document.getElementById('s-sync-status');
+  _syncActionBusy = true;
   btn.disabled = true; btn.textContent = '连接中...'; status.textContent = '';
-  await api('save_settings', sync);
-  const r = await api('sync_test');
-  btn.disabled = false; btn.textContent = '测试连接';
-  status.textContent = r === 'ok' ? '连接成功' : '连接失败: ' + r;
+  try {
+    if (!await saveSyncSettings(sync)) return;
+    const r = await api('sync_test');
+    status.textContent = r === 'ok'
+      ? '连接与读取探测成功；上传、删除权限需在实际操作时验证'
+      : '连接失败: ' + (r || '接口未就绪，请重试');
+    setStatusColor(status, r === 'ok' ? 'ok' : 'error');
+  } catch (e) {
+    status.textContent = '连接失败: ' + (e.message || '未知错误');
+    setStatusColor(status, 'error');
+  } finally {
+    _syncActionBusy = false;
+    btn.disabled = false; btn.textContent = '测试连接';
+  }
+}
+
+// 同步操作使用同一保存队列，持久化失败时不访问旧的云端配置。
+async function saveSyncSettings(values) {
+  let saved = false;
+  await queueSettings(async () => {
+    const r = await api('save_settings', values);
+    saved = !!(r && r.ok === true);
+  });
+  if (!saved) {
+    const status = document.getElementById('s-sync-status');
+    status.textContent = '保存云端设置失败，操作未开始';
+    setStatusColor(status, 'error');
+  }
+  return saved;
 }
 
 async function checkSyncStatus() {
@@ -1085,6 +1114,7 @@ async function showUploadWarning() {
 
 let syncPollTimer = null;
 let syncBg = false;
+let _syncActionBusy = false;
 
 function hideSyncProgress() {
   syncBg = true;
@@ -1106,11 +1136,35 @@ function formatSpeed(bytesPerSec) {
 }
 
 async function doSyncWithProgress(method, title, progressSetting, doneSetting, btnId, statusId) {
+  if (_syncActionBusy) return;
+  _syncActionBusy = true;
+  try {
+    await runSyncWithProgress(method, title, progressSetting, doneSetting, btnId, statusId);
+  } catch (e) {
+    const status = document.getElementById(statusId);
+    status.textContent = '同步失败: ' + (e.message || '未知错误');
+    setStatusColor(status, 'error');
+  } finally {
+    _syncActionBusy = false;
+    if (syncPollTimer) { clearInterval(syncPollTimer); syncPollTimer = null; }
+    document.getElementById('sync-progress-overlay').style.display = 'none';
+    const btn = document.getElementById(btnId);
+    btn.disabled = false;
+    btn.textContent = method === 'sync_push' ? '上传到远端' : '从远端下载';
+  }
+}
+
+// 按方向确认删除范围，保存成功后执行传输并展示结果。
+async function runSyncWithProgress(method, title, progressSetting, doneSetting, btnId, statusId) {
   const sync = collectSyncSettings();
   if (!validateSync(sync)) return;
-  const warnOk = await showUploadWarning();
-  if (!warnOk) return;
-  await api('save_settings', sync);
+  if (method === 'sync_push' && !await showUploadWarning()) return;
+  if (method === 'sync_pull' && sync.sync_remove_local && !await showConfirm(
+    '下载并删除本地多余文件',
+    '下载完成后，将删除云端清单中没有的本地表情。请确认云端清单完整，并已备份本地数据。',
+    '继续下载', '取消'
+  )) return;
+  if (!await saveSyncSettings(sync)) return;
 
   // 检查设置
   const showProgress = document.getElementById(progressSetting)?.checked !== false;
@@ -1158,15 +1212,19 @@ async function doSyncWithProgress(method, title, progressSetting, doneSetting, b
   }
 
   if (r && r.ok) {
-    const uploaded = r.uploaded || r.downloaded || 0;
+    const uploaded = method === 'sync_push' ? (r.uploaded || 0) : (r.downloaded || 0);
     const skipped = r.skipped || 0;
     const errors = r.errors || 0;
-    status.textContent = '完成: 成功 ' + uploaded + ', 跳过 ' + skipped + ', 错误 ' + errors;
+    const failedFiles = r.failed_files || [];
+    const detail = '成功 ' + uploaded + '，跳过 ' + skipped + '，错误 ' + errors
+      + '，删除 ' + (r.deleted || 0)
+      + (failedFiles.length ? '；需检查：' + failedFiles.slice(0, 5).map(f => (f.filename || '?') + '：' + (f.error || '操作失败')).join('；') : '');
+    status.textContent = '完成: ' + detail;
 
     if (showDone) {
       rememberSettingsFocus();
       document.getElementById('sync-done-title').textContent = title + '完成';
-      document.getElementById('sync-done-detail').textContent = '成功 ' + uploaded + ' 个';
+      document.getElementById('sync-done-detail').textContent = detail;
       document.getElementById('sync-done-overlay').style.display = 'flex';
       const closeBtn = document.querySelector('#sync-done-overlay .btn');
       if (closeBtn) closeBtn.focus();

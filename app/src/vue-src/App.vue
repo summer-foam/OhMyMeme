@@ -41,6 +41,9 @@ const {
   loadInitData
 } = useMemes()
 const ctx = useContextMenu()
+async function refreshImportedFavorites() {
+  await Promise.all([search(), refreshTags(), refreshCollections()])
+}
 const cb = useCollectionBuilder()
 const tagEditor = ref<InstanceType<typeof TagEditor> | null>(null)
 const updateDialog = ref<InstanceType<typeof UpdateDialog> | null>(null)
@@ -1858,7 +1861,7 @@ onUnmounted(() => {
       </div>
     </div>
     <div class="workspace-page workspace-qq" :inert="!qqFavoritesOpen ? true : undefined" :aria-hidden="!qqFavoritesOpen">
-      <QQFavoritesPanel :open="qqFavoritesOpen" :selected-ids="[...state.selectedIds]" @close="qqFavoritesOpen = false"/>
+      <QQFavoritesPanel :open="qqFavoritesOpen" :selected-ids="[...state.selectedIds]" @close="qqFavoritesOpen = false" @imported="refreshImportedFavorites"/>
     </div>
     </div>
     </div>

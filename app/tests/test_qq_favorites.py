@@ -510,3 +510,78 @@ def test_no_redirect_and_error_redaction(monkeypatch):
     monkeypatch.setattr(client._opener, "open", fail)
     with pytest.raises(qq.QQFavoritesError, match="^http_401$"):
         client.call("get_login_info")
+
+
+@pytest.mark.parametrize(
+    "action,retries",
+    [
+        ("get_login_info", 2),
+        ("fetch_custom_face_detail", 2),
+        ("add_custom_face", 0),
+        ("delete_custom_face", 0),
+    ],
+)
+# 只有明确只读动作可以有界重试 429，原生写入永不盲重试。
+def test_429_retry_read_only(monkeypatch, action, retries):
+    client = qq.NapCatClient(ENDPOINT, "secret")
+    attempts, delays = [], []
+
+    def limited(*args, **kwargs):
+        attempts.append(1)
+        raise urllib.error.HTTPError(
+            ENDPOINT, 429, "secret", {"Retry-After": "2"}, io.BytesIO()
+        )
+
+    monkeypatch.setattr(client._opener, "open", limited)
+    monkeypatch.setattr(qq.time, "sleep", delays.append)
+    with pytest.raises(qq.QQFavoritesError, match="^http_429$"):
+        client.call(action)
+    assert len(attempts) == retries + 1
+    assert delays == [2] * retries
+
+
+@pytest.mark.parametrize("header", ["999999", "-1", "nan", "not-a-delay"])
+# 不受信任 Retry-After 不能让桥接无限等待。
+def test_429_retry_delay_bounded(monkeypatch, header):
+    client = qq.NapCatClient(ENDPOINT, "secret")
+    delays = []
+
+    def limited(*args, **kwargs):
+        raise urllib.error.HTTPError(
+            ENDPOINT, 429, "secret", {"Retry-After": header}, io.BytesIO()
+        )
+
+    monkeypatch.setattr(client._opener, "open", limited)
+    monkeypatch.setattr(qq.time, "sleep", delays.append)
+    with pytest.raises(qq.QQFavoritesError, match="^http_429$"):
+        client.call("get_login_info")
+    assert delays == [1, 1]
+
+
+# 5000 项合法批次可取消，超出边界在启动前拒绝，不暗示服务端容量。
+def test_batch_5000_boundary_and_cancellable_throttle(fake, monkeypatch):
+    service = qq.QQFavoritesService()
+    resources = [f"r{i}" for i in range(5000)]
+    assert (
+        service.start_delete(ENDPOINT, "s", "12345", resources + ["extra"])["error"]
+        == "empty_or_invalid_items"
+    )
+    entered, release = threading.Event(), threading.Event()
+
+    def first_item(*args):
+        entered.set()
+        assert release.wait(5)
+        return {"ok": True, "status": "verified"}
+
+    monkeypatch.setattr(service, "_item", first_item)
+    monkeypatch.setattr(qq, "_ITEM_INTERVAL", 60)
+    assert service.start_delete(ENDPOINT, "s", "12345", resources)["ok"]
+    try:
+        assert entered.wait(5)
+        service.cancel()
+    finally:
+        release.set()
+    state = finished(service)
+    assert state["total"] == state["done"] == 5000
+    assert state["items"][0]["state"] == "verified"
+    assert all(item["state"] == "cancelled" for item in state["items"][1:])

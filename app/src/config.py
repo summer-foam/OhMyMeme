@@ -133,7 +133,7 @@ class Config:
         "s3_secret_key": "",
         "s3_path": "",
         "s3_addressing_style": "virtual",
-        "s3_signature_version": "s3",
+        "s3_signature_version": "s3v4",
         # R2
         "r2_account_id": "",
         "r2_access_key_id": "",

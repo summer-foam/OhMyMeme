@@ -310,3 +310,80 @@ def test_ensure_ffmpeg_skipped_on_non_windows(tmp_path, monkeypatch, build_mod):
     """仅 Windows 打包内置，其余平台返回 None 交给运行时 PATH 检测"""
     monkeypatch.setattr(build_mod, "IS_WINDOWS", False)
     assert build_mod.ensure_ffmpeg() is None
+
+
+def test_installer_missing_compiler_fails(monkeypatch, build_mod):
+    # 请求安装包时不允许静默返回成功。
+    monkeypatch.setattr(build_mod, "find_iscc", lambda: None)
+    with pytest.raises(SystemExit) as error:
+        build_mod.build_installer("1.2.3", target="Windows")
+    assert error.value.code == 1
+
+
+def test_find_iscc_accepts_directory(tmp_path, monkeypatch, build_mod):
+    # ISCC_DIR 可指向带空格的安装目录。
+    compiler_dir = tmp_path / "Inno Setup 6"
+    compiler_dir.mkdir()
+    compiler = compiler_dir / "ISCC.exe"
+    compiler.write_bytes(b"MZ")
+    monkeypatch.setenv("ISCC_DIR", str(compiler_dir))
+    assert build_mod.find_iscc() == str(compiler)
+
+
+def test_portable_zip_contains_runtime_and_license(tmp_path, monkeypatch, build_mod):
+    # ZIP 保留整个运行目录，不遗漏 _internal 中的模块/工具。
+    import zipfile
+
+    root, helper = _stage(tmp_path, monkeypatch, build_mod)
+    (root / "OhMyMeme.exe").write_bytes(b"MZ app")
+    archive = build_mod.build_windows_portable("1.2.3")
+    with zipfile.ZipFile(archive) as package:
+        assert package.read("OhMyMeme/OhMyMeme.exe") == b"MZ app"
+        assert package.read(helper.relative_to(tmp_path).as_posix()) == b"MZ"
+        assert (
+            package.read("OhMyMeme/LICENSE.txt")
+            == (build_mod.PROJECT_ROOT / "LICENSE").read_bytes()
+        )
+
+
+def test_portable_rejects_missing_executable(tmp_path, monkeypatch, build_mod):
+    # 不能把缺启动程序的目录当作可用便携包。
+    _stage(tmp_path, monkeypatch, build_mod)
+    with pytest.raises(RuntimeError, match="executable missing"):
+        build_mod.build_windows_portable("1.2.3")
+
+
+def test_pyinstaller_resolves_app_from_repository_root(monkeypatch, build_mod):
+    # 模拟从根目录调用，源码分析与工作目录都必须落在 app。
+    monkeypatch.setattr(build_mod, "check_pyinstaller", lambda: None)
+    monkeypatch.setattr(build_mod, "ensure_vue_frontend", lambda: None)
+    monkeypatch.setattr(build_mod, "clean", lambda: None)
+    commands = []
+
+    def run(command, **options):
+        commands.append((command, options))
+        return build_mod.subprocess.CompletedProcess(command, 0)
+
+    monkeypatch.setattr(build_mod.subprocess, "run", run)
+    build_mod.build_pyinstaller(target="Windows")
+    command, options = commands[0]
+    assert command[command.index("--paths") + 1] == str(build_mod.PROJECT_ROOT)
+    assert command[command.index("--workpath") + 1] == str(
+        build_mod.PROJECT_ROOT / "build"
+    )
+    assert options["cwd"] == str(build_mod.PROJECT_ROOT)
+
+
+def test_installer_rejects_missing_compiler_output(tmp_path, monkeypatch, build_mod):
+    # 编译器返回零但未产出目标文件时仍必须失败。
+    _stage(tmp_path, monkeypatch, build_mod)
+    monkeypatch.setattr(build_mod, "find_iscc", lambda: "ISCC.exe")
+    monkeypatch.setattr(build_mod, "_ensure_lang_file", lambda compiler: None)
+    monkeypatch.setattr(
+        build_mod.subprocess,
+        "run",
+        lambda command, **options: build_mod.subprocess.CompletedProcess(command, 0),
+    )
+    with pytest.raises(SystemExit) as error:
+        build_mod.build_installer("1.2.3", target="Windows")
+    assert error.value.code == 1
