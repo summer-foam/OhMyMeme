@@ -666,12 +666,12 @@ def find_iscc():
     paths = [
         str(Path(override) / "ISCC.exe") if override else "",
         override,
-        shutil.which("ISCC.exe"),
         r"C:\Program Files\Inno Setup 7\ISCC.exe",
         r"C:\Program Files (x86)\Inno Setup 6\ISCC.exe",
         r"C:\Program Files\Inno Setup 6\ISCC.exe",
         r"C:\Program Files (x86)\Inno Setup 5\ISCC.exe",
         r"C:\Program Files\Inno Setup 5\ISCC.exe",
+        shutil.which("ISCC.exe"),
     ]
     for p in paths:
         if p and os.path.isfile(p):
@@ -867,15 +867,17 @@ def _ensure_lang_file(iscc_exe):
     lang_dir = iscc_dir / "Languages"
     lang_file = lang_dir / "ChineseSimplified.isl"
     if lang_file.exists():
-        return
-    lang_dir.mkdir(parents=True, exist_ok=True)
+        return lang_file
+    lang_file = BUILD_DIR / "ChineseSimplified.isl"
+    lang_file.parent.mkdir(parents=True, exist_ok=True)
     try:
         import urllib.request
 
         print("Downloading ChineseSimplified.isl...")
         urllib.request.urlretrieve(_LANG_URL, lang_file)
     except Exception as e:
-        print("WARNING: failed to download language file:", e)
+        raise RuntimeError("Unable to obtain installer language file") from e
+    return lang_file.resolve()
 
 
 def build_installer(version, target=None, filename_version=None):
@@ -891,7 +893,7 @@ def build_installer(version, target=None, filename_version=None):
         print(L("iscc_not_found"))
         sys.exit(1)
 
-    _ensure_lang_file(iscc)
+    language_file = _ensure_lang_file(iscc)
 
     dist_dir = BUILD_DIR / APP_NAME
     if not dist_dir.is_dir():
@@ -909,6 +911,9 @@ def build_installer(version, target=None, filename_version=None):
     numeric_version = re.match(r"^\d+(\.\d+)*", filename_version)
     app_version = numeric_version.group(0) if numeric_version else version
     iss_content = iss_template.read_text(encoding="utf-8")
+    iss_content = iss_content.replace(
+        r"compiler:Languages\ChineseSimplified.isl", str(language_file)
+    )
     iss_content = iss_content.replace(
         '#define MyAppVersion "0.1.0"',
         '#define MyAppVersion "%s"' % app_version,

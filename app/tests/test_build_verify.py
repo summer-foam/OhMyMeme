@@ -35,6 +35,25 @@ def _stage(
     return root, helper
 
 
+def test_inno_language_download_uses_build_directory(build_mod, monkeypatch, tmp_path):
+    import urllib.request
+
+    compiler = tmp_path / "shim" / "ISCC.exe"
+    compiler.parent.mkdir()
+    compiler.write_bytes(b"fixture")
+    output = tmp_path / "build"
+    monkeypatch.setattr(build_mod, "BUILD_DIR", output)
+
+    def download(url, destination):
+        Path(destination).write_text("[LangOptions]", encoding="utf-8")
+
+    monkeypatch.setattr(urllib.request, "urlretrieve", download)
+    result = build_mod._ensure_lang_file(str(compiler))
+    assert result == output / "ChineseSimplified.isl"
+    assert result.is_file()
+    assert not (compiler.parent / "Languages").exists()
+
+
 def test_passes_on_wellformed_bundle(tmp_path, monkeypatch, build_mod):
     """正常产物应通过（非 Windows 仅走存在性检查，故用无后缀二进制名）"""
     monkeypatch.setattr(build_mod, "IS_WINDOWS", False)
